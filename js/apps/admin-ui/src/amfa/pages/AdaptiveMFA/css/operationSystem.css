@@ -1,0 +1,38 @@
+.operationSystem {
+  margin-left: 245px;
+}
+
+.operationSystem .pf-c-select {
+  width: 138px;
+  margin-left: 34px;
+  position: relative;
+  top: -27px;
+}
+
+.operationSystem label {
+  margin-left: -130px;
+}
+
+.operationSystemWeight {
+  margin-top: 22px;
+  margin-left: -52px;
+}
+
+.operationSystemWeight .pf-c-select {
+  width: 138px;
+  margin-left: 85px;
+  position: relative;
+  top: -27px;
+}
+.text-operationSystem {
+  margin-left: 53px;
+}
+
+.text-operationSystem label {
+  position: relative;
+  top: 18px;
+  font-weight: bold;
+}
+.text-operationSystem textarea {
+  margin-left: -21px;
+}

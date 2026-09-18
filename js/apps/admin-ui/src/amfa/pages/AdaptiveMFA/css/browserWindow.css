@@ -1,0 +1,28 @@
+.browserWindow {
+  margin-left: 299px;
+}
+
+.browserWindow .pf-c-select {
+  width: 138px;
+  margin-left: 9px;
+  position: relative;
+  top: -27px;
+}
+.browserWindowWeight {
+  margin-top: 20px;
+  margin-left: 55px;
+}
+.browserWindow label {
+  margin-left: -177px;
+}
+
+.browserWindowWeight label {
+  margin-left: 11px;
+}
+
+.browserWindowWeight .pf-c-select {
+  width: 138px;
+  margin-left: 251px;
+  position: relative;
+  top: -27px;
+}
