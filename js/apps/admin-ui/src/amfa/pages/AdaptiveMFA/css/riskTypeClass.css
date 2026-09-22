@@ -1,0 +1,28 @@
+.riskTypeClass {
+  margin-left: 103px;
+}
+
+.riskTypeClass .pf-c-select {
+  width: 138px;
+  margin-left: 147px;
+  position: relative;
+  top: -27px;
+}
+
+.riskTypeClass label {
+  margin-left: 18px;
+}
+.riskTypeClassWeight {
+  margin-top: 8px;
+  margin-left: 39px;
+}
+.riskTypeClassWeight label {
+  margin-left: 26px;
+}
+
+.riskTypeClassWeight .pf-c-select {
+  width: 138px;
+  margin-left: 212px;
+  position: relative;
+  top: -27px;
+}

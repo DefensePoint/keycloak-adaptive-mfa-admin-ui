@@ -1,0 +1,26 @@
+.client-id {
+  margin-left: 144px;
+}
+
+.client-id .pf-c-select {
+  width: 138px;
+  margin-left: 143px;
+  position: relative;
+  top: -27px;
+}
+.client-id label {
+  margin-left: 75px;
+}
+.client-weight label {
+  margin-left: 92px;
+}
+.client-weight .pf-c-select {
+  width: 138px;
+  margin-left: 218px;
+  position: relative;
+  top: -27px;
+}
+.client-weight {
+  margin-top: 17px;
+  margin-left: 70px;
+}

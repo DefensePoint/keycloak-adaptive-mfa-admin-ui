@@ -1,0 +1,30 @@
+.clientLanguage {
+  margin-left: 86px;
+}
+
+.clientLanguage .pf-c-select {
+  width: 138px;
+  margin-left: 156px;
+  position: relative;
+  top: -27px;
+}
+
+.clientLanguageWeight {
+  margin-top: 22px;
+  margin-left: 27px;
+}
+
+.clientLanguage label {
+  margin-left: 15px;
+}
+
+.clientLanguageWeight label {
+  margin-left: 15px;
+}
+
+.clientLanguageWeight .pf-c-select {
+  width: 138px;
+  margin-left: 212px;
+  position: relative;
+  top: -27px;
+}

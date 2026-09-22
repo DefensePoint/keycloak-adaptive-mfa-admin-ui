@@ -1,0 +1,27 @@
+.device {
+  margin-left: 296px;
+}
+.device .pf-c-select {
+  width: 138px;
+  margin-left: -10px;
+  position: relative;
+  top: -27px;
+}
+.device label {
+  margin-left: -101px;
+}
+.deviceWeight {
+  margin-top: 22px;
+  margin-left: 138px;
+}
+.deviceWeight .pf-c-select {
+  width: 138px;
+  margin-left: 143px;
+  position: relative;
+  top: -27px;
+}
+.range-label-containe-device label {
+  position: relative;
+  left: 66px;
+  font-weight: bold;
+}
