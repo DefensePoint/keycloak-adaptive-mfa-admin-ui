@@ -1,0 +1,36 @@
+.ipAddress {
+  margin-left: 177px;
+}
+.ipAddress .pf-c-select {
+  width: 138px;
+  margin-left: 112px;
+  position: relative;
+  top: -27px;
+}
+.range-label-container-ip-address label {
+  position: relative;
+  left: 51px;
+  font-weight: bold;
+}
+.ipAddress-weight {
+  margin-left: -56px;
+  margin-top: 20px;
+}
+.ipAddress-weight .pf-c-select {
+  width: 138px;
+  margin-left: 167px;
+  position: relative;
+  top: -27px;
+}
+.text-ip-address {
+  margin-left: 7px;
+}
+.text-ip-address textarea {
+  margin-left: 102px;
+}
+
+.text-ip-address label {
+  position: relative;
+  top: 18px;
+  font-weight: bold;
+}
