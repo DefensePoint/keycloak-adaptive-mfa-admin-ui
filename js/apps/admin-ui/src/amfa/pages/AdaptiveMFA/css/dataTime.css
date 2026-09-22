@@ -1,0 +1,61 @@
+.dataTime {
+  margin-left: 263px;
+}
+
+.dataTime .pf-c-select {
+  width: 138px;
+  margin-left: 248px;
+  position: relative;
+  top: -27px;
+}
+.dataTime .pf-c-form__group-label {
+  margin-left: 100px;
+}
+.dataTimeWeight {
+  margin-top: 7px;
+  margin-left: -3px;
+}
+.dataTime label {
+  margin-left: -90px;
+}
+
+.dataTimeWeight label {
+  margin-left: 58px;
+}
+
+.dataTimeWeight .pf-c-select {
+  width: 138px;
+  margin-left: 245px;
+  position: relative;
+  top: -27px;
+}
+
+.start-end {
+  margin-left: -60px;
+}
+.start-end .start-time {
+  margin-left: 159px;
+  margin-top: 15px;
+}
+.start-end .start-time label {
+  font-weight: bold;
+}
+
+.start-end .start-time input {
+  position: relative;
+  left: 145px;
+  top: -21px;
+}
+
+.start-end .end-time input {
+  position: relative;
+  left: 139px;
+  top: -27px;
+}
+
+.start-end .end-time {
+  margin-left: 165px;
+}
+.start-end .end-time label {
+  font-weight: bold;
+}

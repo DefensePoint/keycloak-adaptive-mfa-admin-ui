@@ -1,0 +1,32 @@
+name: CI
+on:
+  pull_request:
+    branches: [main, development]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: js/pnpm-lock.yaml
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Build JAR
+        run: ./build.sh
+
+      - name: Unit tests
+        working-directory: js/apps/admin-ui
+        run: pnpm exec vitest run src
