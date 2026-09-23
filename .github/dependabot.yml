@@ -4,7 +4,7 @@ updates:
     directories:
       - "/js/apps/admin-ui"
       - "/js/libs/*"
-    target-branch: "development"
+    target-branch: "main"
     schedule:
       interval: "weekly"
 
@@ -12,7 +12,7 @@ updates:
     directories:
       - "/js/apps/admin-ui"
       - "/js/libs/*"
-    target-branch: "development"
+    target-branch: "main"
     schedule:
       interval: "weekly"
     ignore:
