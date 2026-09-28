@@ -1,0 +1,44 @@
+.vpnMask {
+  margin-left: 85px;
+}
+
+.vpnMask .pf-c-select {
+  width: 138px;
+  margin-left: 156px;
+  position: relative;
+  top: -27px;
+}
+
+.vpnMask label {
+  margin-left: 54px;
+}
+
+.vpnMaskWeight {
+  margin-top: 22px;
+  margin-left: -53px;
+}
+
+.vpnMaskWeight .pf-c-select {
+  width: 138px;
+  margin-left: 210px;
+  position: relative;
+  top: -27px;
+}
+
+.range-label-container-vpn label {
+  margin-left: 40px;
+  font-weight: bold;
+}
+.text-vpn label {
+  position: relative;
+  top: 18px;
+  font-weight: bold;
+}
+
+.text-vpn {
+  margin-left: -15px;
+}
+
+.text-vpn textarea {
+  margin-left: 171px;
+}

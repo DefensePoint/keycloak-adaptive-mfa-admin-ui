@@ -1,0 +1,60 @@
+name: Release
+
+# Pushing a tag like v1.0.1 builds the JAR from that tag, runs the tests,
+# and publishes a GitHub Release with the JAR and its checksum attached.
+# The asset name is stable across releases (keycloak-admin-ui-amfa.jar):
+# consumers pin a version through the release tag in the download URL, e.g.
+#   https://github.com/DefensePoint/keycloak-adaptive-mfa-admin-ui/releases/download/v1.0.1/keycloak-admin-ui-amfa.jar
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # create the release and upload assets
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: js/pnpm-lock.yaml
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Build JAR
+        run: ./build.sh
+
+      - name: Unit tests
+        working-directory: js/apps/admin-ui
+        run: pnpm exec vitest run src
+
+      - name: Checksum
+        working-directory: dist
+        run: sha256sum keycloak-admin-ui-amfa.jar > keycloak-admin-ui-amfa.jar.sha256
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          KC_VERSION="$(node -p "require('./js/apps/admin-ui/package.json').version")"
+          NOTES="$(printf '%s\n\n%s' \
+            "Built against Keycloak ${KC_VERSION}. Deploy by replacing the stock admin-ui JAR of that exact version: mount or copy the asset to \`/opt/keycloak/providers/keycloak-admin-ui-${KC_VERSION}.jar\`." \
+            "Verify the download with \`sha256sum -c keycloak-admin-ui-amfa.jar.sha256\`.")"
+          gh release create "$GITHUB_REF_NAME" \
+            dist/keycloak-admin-ui-amfa.jar \
+            dist/keycloak-admin-ui-amfa.jar.sha256 \
+            --verify-tag \
+            --generate-notes \
+            --notes "$NOTES"

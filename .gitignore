@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.stage/
+.cache/
+js/apps/admin-ui/dist/
+js/libs/*/dist/
+*.tgz
+.DS_Store
+/js/apps/admin-ui/target
+.idea/

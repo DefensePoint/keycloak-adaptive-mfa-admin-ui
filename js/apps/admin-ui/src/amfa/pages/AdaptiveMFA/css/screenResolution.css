@@ -1,0 +1,21 @@
+.screenResolution {
+  margin-left: 85px;
+}
+
+.screenResolution .pf-c-select {
+  width: 138px;
+  margin-left: 156px;
+  position: relative;
+  top: -27px;
+}
+
+.screenResolutionWeight .pf-c-select {
+  width: 138px;
+  margin-left: 213px;
+  position: relative;
+  top: -27px;
+}
+.screenResolutionWeight {
+  margin-top: 22px;
+  margin-left: 28px;
+}

@@ -1,0 +1,157 @@
+
+.adaptive-endpoint {
+  display: flex;
+  align-items: center;
+  margin: 20px 0;
+  padding-left: 20px;
+}
+
+.adaptive-toggle .pf-c-switch {
+  /* margin-left: 98px;
+  margin-top: -53px; */
+  margin-left: 10px;
+
+}
+
+.adaptive-endpoint .adpativeAuth {
+  display: flex;
+  align-items: center;
+  gap: 40px;
+}
+
+.adaptive-endpoint label {
+  font-weight: bold;
+  min-width: 200px;
+}
+.adaptive-fallbackRisk label {
+  font-weight: bold;
+  min-width: 200px;
+}
+
+.adaptive-toggle {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  margin: 20px 0;
+  padding-left: 20px;
+}
+
+.adaptive-endpoint {
+  display: flex;
+  align-items: center;
+  margin: 20px 0;
+  padding-left: 20px;
+}
+.adaptive-endpoint input {
+  width: 400px;
+}
+.adaptive-fallbackRisk {
+  display: flex;
+  align-items: center;
+  margin: 20px 0;
+  padding-left: 20px;
+}
+.adaptive-fallbackRisk input {
+  width: 100px;
+  margin-left: 40px;
+}
+
+
+.adaptive-notifyUsers {
+  display: flex;
+  align-items: center;
+  margin: 20px 0;
+  padding-left: 20px;
+}
+
+.adaptive-notifyUsers .pf-c-switch {
+  margin-left: 40px;
+}
+
+
+.adaptive-notifyUsers label {
+  font-weight: bold;
+  min-width: 200px;
+}
+
+.line {
+  border-top: 1px solid #ccc;
+  margin: 20px 0;
+}
+
+.options-list {
+  display: flex;
+  padding: 0px;
+  list-style: none;
+  margin-top: 10px;
+  margin: 0px 329px;
+  justify-content: space-between;
+  margin: 0 1021px 0 219px;
+}
+
+.description {
+  margin-left: 593px;
+  position: relative;
+  margin-top: -33px;
+}
+.description label {
+  font-weight: bold;
+  margin-bottom: 5px;
+}
+.submit-button {
+  position: relative;
+  left: 532px;
+  top: 23px;
+}
+.adaptive-toggle label,
+.adaptive-endpoint label,
+.switch-container label,
+.in-active-number label,
+.range-label-container label {
+  font-weight: bold;
+}
+.add-button {
+width:auto;
+  max-width: 100px;
+  margin-left: 501px;
+  margin-top: -40px;
+  padding-left: 11px;
+  
+}
+.description-ipAddress {
+  margin-left: 593px;
+  position: relative;
+  top: -224px;
+}
+.description-operatingSystem label,
+.description-dateTime label,
+.description-geoLoc label,
+.description-vpnMask label,
+.description-ipAddress label,
+.description-inActiveAcc label {
+  font-weight: bold;
+  margin-bottom: 5px;
+}
+.description-operatingSystem,
+.description-vpnMask {
+  margin-left: 593px;
+  position: relative;
+  top: -224px;
+}
+.description-dateTime {
+  margin-left: 541px;
+  position: relative;
+  top: -224px;
+}
+
+.description-geoLoc {
+  margin-left: 593px;
+  position: relative;
+  top: -188px;
+}
+.description-inActiveAcc {
+  margin-left: 593px;
+  position: relative;
+  top: -184px;
+}
+

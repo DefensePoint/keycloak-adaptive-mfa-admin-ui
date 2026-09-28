@@ -1,0 +1,28 @@
+.timeInterval {
+  margin-left: 100px;
+}
+
+.timeInterval .pf-c-select {
+  width: 138px;
+  margin-left: 147px;
+  position: relative;
+  top: -27px;
+}
+.timeIntervalWeight {
+  margin-top: -19px;
+  margin-left: 33px;
+}
+.timeInterval label {
+  margin-left: 35px;
+}
+
+.timeIntervalWeight label {
+  margin-left: 46px;
+}
+
+.timeIntervalWeight .pf-c-select {
+  width: 138px;
+  margin-left: 212px;
+  position: relative;
+  top: -27px;
+}
