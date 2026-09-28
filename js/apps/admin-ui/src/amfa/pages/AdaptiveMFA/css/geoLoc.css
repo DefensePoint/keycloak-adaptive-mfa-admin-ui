@@ -1,0 +1,44 @@
+.geoLoc {
+  margin-left: 82px;
+}
+
+.geoLoc .pf-c-select {
+  width: 138px;
+  margin-left: 156px;
+  position: relative;
+  top: -27px;
+}
+
+.geoLocWeight {
+  margin-top: 22px;
+  margin-left: -55px;
+}
+
+.geoLoc label {
+  margin-left: 75px;
+}
+
+.geoLocWeight label {
+  margin-left: 77px;
+}
+
+.geoLocWeight .pf-c-select {
+  width: 138px;
+  margin-left: 212px;
+  position: relative;
+  top: -27px;
+}
+.countries {
+  margin-left: -44px;
+}
+.countries label {
+  position: relative;
+  top: 19px;
+  font-weight: bold;
+}
+.countries .pf-c-select {
+  max-width: 267px;
+  position: relative;
+  left: 202px;
+  margin: -2px;
+}
