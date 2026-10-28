@@ -102,15 +102,19 @@ test.describe.serial("Adaptive MFA dormancy threshold (full stack)", () => {
     await goToAdaptiveMfa(page);
     await expandSignal(page, "inActiveAcc");
 
-    // Proves the read path first: the engine fills the effective value, so this
-    // is never blank even though the realm has never stored a threshold.
+    // Save stays disabled until the config has loaded (and for good if the load
+    // failed), so a clickable Save is evidence the config loaded. Wait for it
+    // before typing: the field starts at the form default, and the load would
+    // overwrite anything typed before it arrives.
+    await expect(saveButton(page)).toBeEnabled();
+
+    // Proves the read path: the engine fills the effective value, so this is
+    // never blank or the form default even though the realm has never stored a
+    // threshold.
     await expect(daysField(page)).not.toHaveValue("");
+    await expect(daysField(page)).not.toHaveValue("0");
 
     await daysField(page).fill(REALM_THRESHOLD);
-
-    // Save must be enabled: the guard disables it when the load failed, so a
-    // clickable Save is itself evidence the config loaded.
-    await expect(saveButton(page)).toBeEnabled();
     await saveButton(page).click();
     await expect(page.getByTestId("last-alert")).toContainText(
       "All the data are saved",
