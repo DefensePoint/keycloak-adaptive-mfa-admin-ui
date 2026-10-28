@@ -66,7 +66,7 @@ const SIMPLE_SIGNALS: { key: string; label: string; desc: string }[] = [
 ];
 
 const ARRAY_SIGNALS: { key: string; label: string; desc: string }[] = [
-  { key: "ipAddress", label: "ipAddress", desc: "adaptive-mfa-ip-address-description" },
+  { key: "ipAddress", label: "amfaIpAddress", desc: "adaptive-mfa-ip-address-description" },
   { key: "operationSystem", label: "operationSystem", desc: "adaptive-mfa-operating-system-description" },
   { key: "dateTime", label: "dataTime", desc: "adaptive-mfa-date-time-description" },
   { key: "geoLoc", label: "geoLoc", desc: "adaptive-mfa-geo-loc-description" },
