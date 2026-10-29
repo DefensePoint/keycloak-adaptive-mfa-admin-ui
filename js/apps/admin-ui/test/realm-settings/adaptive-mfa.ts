@@ -62,6 +62,12 @@ export type Stubs = {
   scoringPut?: Response;
   /** Receives the parsed body of each save, for asserting what the UI sends. */
   onSave?: (payload: any) => void;
+  /** When set, the settings GET waits for this before answering. */
+  settingsGetGate?: Promise<unknown>;
+  /** When set, the scoring GET waits for this before answering. */
+  scoringGetGate?: Promise<unknown>;
+  /** Groups offered in the group-override selector. Defaults to none. */
+  groups?: { id: string; name: string }[];
 };
 
 /**
@@ -86,13 +92,21 @@ export async function stubAmfa(page: Page, stubs: Stubs) {
   const scoringPut = stubs.scoringPut ?? { status: 200, body: '"success"' };
 
   // Lookup lists: always healthy, never under test here.
-  await page.route(GROUPS, (r: Route) => r.fulfill(json({ status: 200, body: "[]" })));
+  await page.route(GROUPS, (r: Route) =>
+    r.fulfill(json({ status: 200, body: JSON.stringify(stubs.groups ?? []) })),
+  );
   await page.route(COUNTRIES, (r: Route) =>
     r.fulfill(json({ status: 200, body: "[]" })),
   );
 
-  await page.route(SETTINGS_GET, (r: Route) => r.fulfill(json(settingsGet)));
-  await page.route(SCORING_GET, (r: Route) => r.fulfill(json(scoringGet)));
+  await page.route(SETTINGS_GET, async (r: Route) => {
+    await stubs.settingsGetGate;
+    return r.fulfill(json(settingsGet));
+  });
+  await page.route(SCORING_GET, async (r: Route) => {
+    await stubs.scoringGetGate;
+    return r.fulfill(json(scoringGet));
+  });
   await page.route(SETTINGS_PUT, (r: Route) => {
     if (stubs.onSave) {
       try {

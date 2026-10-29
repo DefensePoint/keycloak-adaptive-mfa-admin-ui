@@ -154,6 +154,47 @@ test.describe.serial("Adaptive MFA error handling", () => {
     expect(saveAttempted).toBe(false);
   });
 
+  test("saving stays blocked until the configuration has loaded", async ({
+    page,
+  }) => {
+    // Until both loads answer, the form holds its built-in defaults, so an early
+    // click would overwrite live config with them. A slow engine made this easy
+    // to hit, and the button used to be enabled the whole time.
+    let releaseSettings!: () => void;
+    let releaseScoring!: () => void;
+    let saveAttempted = false;
+    await stubAmfa(page, {
+      realm: realmName,
+      settingsGetGate: new Promise<void>((r) => (releaseSettings = r)),
+      scoringGetGate: new Promise<void>((r) => (releaseScoring = r)),
+      onSave: () => {
+        saveAttempted = true;
+      },
+    });
+    await goToAdaptiveMfa(page, realmName);
+
+    await expect(saveButton(page)).toBeDisabled();
+    // The guard inside onSubmit must hold as well.
+    await page.evaluate(() => {
+      const save = document.querySelector('[data-testid="amfa-save"]');
+      (save?.closest("form") as HTMLFormElement | null)?.requestSubmit();
+    });
+
+    // One load done is not enough: the scoring fields feed the save too.
+    const settingsLoaded = page.waitForResponse(
+      "**/amfa-api/fetchAdaptiveMFAParameters",
+    );
+    releaseSettings();
+    await settingsLoaded;
+    await expect(saveButton(page)).toBeDisabled();
+
+    releaseScoring();
+    await expect(saveButton(page)).toBeEnabled();
+    // Nothing is wrong, so no "blocked" explanation.
+    await expect(blockedNotice(page)).toHaveCount(0);
+    expect(saveAttempted).toBe(false);
+  });
+
   test("a healthy save still reports success", async ({ page }) => {
     await stubAmfa(page, { realm: realmName });
     await goToAdaptiveMfa(page, realmName);
