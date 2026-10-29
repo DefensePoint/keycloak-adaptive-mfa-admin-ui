@@ -66,7 +66,7 @@ const SIMPLE_SIGNALS: { key: string; label: string; desc: string }[] = [
 ];
 
 const ARRAY_SIGNALS: { key: string; label: string; desc: string }[] = [
-  { key: "ipAddress", label: "ipAddress", desc: "adaptive-mfa-ip-address-description" },
+  { key: "ipAddress", label: "amfaIpAddress", desc: "adaptive-mfa-ip-address-description" },
   { key: "operationSystem", label: "operationSystem", desc: "adaptive-mfa-operating-system-description" },
   { key: "dateTime", label: "dataTime", desc: "adaptive-mfa-date-time-description" },
   { key: "geoLoc", label: "geoLoc", desc: "adaptive-mfa-geo-loc-description" },
@@ -210,6 +210,9 @@ export default function AdaptiveMFA() {
   // its built-in defaults rather than the realm's real settings, so saving would
   // overwrite live config with defaults. Saving is blocked until a reload works.
   const [configLoadFailed, setConfigLoadFailed] = useState(false);
+  // Set until both the settings and the scoring config have loaded. Until then
+  // the form holds its built-in defaults too, so saving is blocked the same way.
+  const [configLoading, setConfigLoading] = useState(true);
   const toggleSignal = (key: string) =>
     setExpandedSignals((prev) =>
       prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key],
@@ -1067,11 +1070,13 @@ export default function AdaptiveMFA() {
   };
 
   useEffect(() => {
-    fetchData();
+    // Both loads catch their own errors, so this settles either way.
+    Promise.all([fetchData(), getScoringConfig()]).finally(() =>
+      setConfigLoading(false),
+    );
     updateParameters();
     getCountries();
     getGroups();
-    getScoringConfig();
   }, []);
 
   async function updateParameters() {
@@ -1156,6 +1161,41 @@ export default function AdaptiveMFA() {
   };
   
 
+  // Each group-scoped signal saves one parameter row per group: row 0 is the
+  // realm default and every override needs a group of its own. An override with
+  // no group would save as a second "default" row, and a group picked twice
+  // writes two rows for it; either pushes that group past the engine's parameter
+  // count, and the engine rejects the whole save.
+  const validateUniqueGroups = (data: AuthConfigSuper): boolean => {
+    for (const { key, label } of ARRAY_SIGNALS) {
+      const rows = (data as any)[key] as { groupId?: string }[] | undefined;
+      if (!Array.isArray(rows)) continue;
+
+      const seen = new Set<string>();
+      for (let index = 0; index < rows.length; index++) {
+        const rawGroupId = rows[index].groupId;
+        if (index > 0 && !rawGroupId) {
+          addAlert(t("amfaGroupMissing", { section: t(label) }), AlertVariant.danger);
+          return false;
+        }
+        const groupId = rawGroupId || "default";
+        if (seen.has(groupId)) {
+          const groupName =
+            (groupsOptions as { label: string; value: string }[]).find(
+              (g) => g.value === groupId,
+            )?.label || groupId;
+          addAlert(
+            t("amfaGroupDuplicate", { section: t(label), group: groupName }),
+            AlertVariant.danger,
+          );
+          return false;
+        }
+        seen.add(groupId);
+      }
+    }
+    return true;
+  };
+
   const onSubmit = async (data: AuthConfigSuper) => {
     // Defence in depth behind the disabled Save button, which is what actually
     // prevents this today: browsers suppress implicit form submission while the
@@ -1164,6 +1204,9 @@ export default function AdaptiveMFA() {
     // submit path, because overwriting live config with defaults is not
     // recoverable from this UI. Covered by the requestSubmit() test in
     // adaptive-mfa-errors.spec.ts, which is how the guard is reachable at all.
+    if (configLoading) {
+      return;
+    }
     if (configLoadFailed) {
       addError("amfaLoadError", new Error(t("amfaSaveBlockedLoadFailed")));
       return;
@@ -1175,6 +1218,10 @@ export default function AdaptiveMFA() {
         if (!validateIpsBlacklistWhitelist(ipAddress, index)) {
           return false;
         }
+      }
+
+      if (!validateUniqueGroups(data)) {
+        return false;
       }
 
       const realmRep = await adminClient.realms.findOne({ realm });
@@ -1600,7 +1647,7 @@ export default function AdaptiveMFA() {
             <Button
               type="submit"
               variant="primary"
-              isDisabled={configLoadFailed}
+              isDisabled={configLoading || configLoadFailed}
               data-testid="amfa-save"
             >
               {t("save")}
