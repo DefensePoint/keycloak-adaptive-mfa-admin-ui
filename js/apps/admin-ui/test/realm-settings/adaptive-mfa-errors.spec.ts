@@ -4,10 +4,15 @@ import adminClient from "../utils/AdminClient.ts";
 import {
   alert,
   blockedNotice,
+  daysField,
+  EFFECTIVE_DAYS,
   ENGINE_DOWN_BODY,
+  expandSignal,
   goToAdaptiveMfa,
+  savedDormancyRow,
   saveButton,
   stubAmfa,
+  type Write,
 } from "./adaptive-mfa.ts";
 
 /**
@@ -67,26 +72,130 @@ test.describe.serial("Adaptive MFA error handling", () => {
     await expect(alert(page)).toContainText("AMFA engine unreachable");
   });
 
-  test("a partial save names the step that failed", async ({ page }) => {
+  test("a failed scoring write puts the risk signals back", async ({ page }) => {
+    const writes: Write[] = [];
     await stubAmfa(page, {
       realm: realmName,
-      settingsPut: { status: 200, body: '"success"' },
-      scoringPut: {
-        status: 502,
-        body: JSON.stringify({
-          error:
-            "AMFA engine returned HTTP 422: thresholds must be three ascending values within [0, 1]",
-        }),
-      },
+      scoringPut: { status: 502, body: ENGINE_DOWN_BODY },
+      onWrite: (w) => writes.push(w),
     });
     await goToAdaptiveMfa(page, realmName);
+    // The stub loads "weight"; scoring is only written when it changed.
+    await page.locator("#scoringMode").selectOption("bayesian");
+    await expandSignal(page, "inActiveAcc");
+    await daysField(page).fill("77");
 
     await saveButton(page).click();
 
-    // The two writes are independent, so reporting a flat failure would be as
-    // misleading as reporting success: the signals really were saved.
-    await expect(alert(page)).toContainText("Risk signals were saved");
-    await expect(alert(page)).toContainText("scoring config failed");
+    await expect(alert(page)).toContainText("Saving the scoring config failed");
+    await expect(alert(page)).toContainText("HTTP 502");
+    await expect(alert(page)).toContainText("Nothing was changed");
+    // New signals, the scoring write and its one retry, then the signals as
+    // loaded. The realm attributes (the AMFA toggle) are never written.
+    expect(writes.map((w) => w.kind)).toEqual([
+      "settings",
+      "scoring",
+      "scoring",
+      "settings",
+    ]);
+    expect(savedDormancyRow(writes[0].payload).inactive_days).toBe(77);
+    expect(savedDormancyRow(writes[3].payload).inactive_days).toBe(EFFECTIVE_DAYS);
+  });
+
+  test("a write that fails once is retried and the save goes through", async ({
+    page,
+  }) => {
+    const writes: Write[] = [];
+    await stubAmfa(page, {
+      realm: realmName,
+      scoringPut: [
+        { status: 502, body: ENGINE_DOWN_BODY },
+        { status: 200, body: '"success"' },
+      ],
+      onWrite: (w) => writes.push(w),
+    });
+    await goToAdaptiveMfa(page, realmName);
+    // The stub loads "weight"; scoring is only written when it changed.
+    await page.locator("#scoringMode").selectOption("bayesian");
+
+    await saveButton(page).click();
+
+    await expect(alert(page)).toContainText("All the data are saved");
+    expect(writes.map((w) => w.kind)).toEqual([
+      "settings",
+      "scoring",
+      "scoring",
+      "realm",
+    ]);
+  });
+
+  test("when putting the signals back fails too, the message says so", async ({
+    page,
+  }) => {
+    await stubAmfa(page, {
+      realm: realmName,
+      // The save's own write succeeds, then the engine goes away.
+      settingsPut: [
+        { status: 200, body: '"success"' },
+        { status: 502, body: ENGINE_DOWN_BODY },
+      ],
+      scoringPut: { status: 502, body: ENGINE_DOWN_BODY },
+    });
+    await goToAdaptiveMfa(page, realmName);
+    // The stub loads "weight"; scoring is only written when it changed.
+    await page.locator("#scoringMode").selectOption("bayesian");
+
+    await saveButton(page).click();
+
+    await expect(alert(page)).toContainText("Saving the scoring config failed");
+    await expect(alert(page)).toContainText(
+      "putting back the risk signals failed too",
+    );
+    await expect(alert(page)).toContainText("Press Save again");
+  });
+
+  test("a failed realm update puts both engine writes back", async ({ page }) => {
+    const writes: Write[] = [];
+    await stubAmfa(page, {
+      realm: realmName,
+      realmPut: { status: 500, body: JSON.stringify({ error: "unknown_error" }) },
+      onWrite: (w) => writes.push(w),
+    });
+    await goToAdaptiveMfa(page, realmName);
+    // The stub loads "weight"; scoring is only written when it changed.
+    await page.locator("#scoringMode").selectOption("bayesian");
+
+    await saveButton(page).click();
+
+    await expect(alert(page)).toContainText("Saving the realm settings failed");
+    await expect(alert(page)).toContainText("Nothing was changed");
+    // Newest first: scoring, then signals.
+    expect(writes.map((w) => w.kind)).toEqual([
+      "settings",
+      "scoring",
+      "realm",
+      "scoring",
+      "settings",
+    ]);
+    // Scoring is put back as loaded.
+    expect(writes[3].payload).toEqual({ mode: "weight" });
+  });
+
+  test("invalid thresholds are refused before anything is written", async ({
+    page,
+  }) => {
+    const writes: Write[] = [];
+    await stubAmfa(page, { realm: realmName, onWrite: (w) => writes.push(w) });
+    await goToAdaptiveMfa(page, realmName);
+    await page.locator("#scoringMode").selectOption("bayesian");
+    await page.locator("#scoring-thresholds").fill("0.9, 0.5, 0.2");
+
+    await saveButton(page).click();
+
+    await expect(alert(page)).toContainText(
+      "Thresholds must be three ascending numbers between 0 and 1",
+    );
+    expect(writes).toEqual([]);
   });
 
   test("a failed settings load blocks saving over live config", async ({
@@ -196,7 +305,8 @@ test.describe.serial("Adaptive MFA error handling", () => {
   });
 
   test("a healthy save still reports success", async ({ page }) => {
-    await stubAmfa(page, { realm: realmName });
+    const writes: Write[] = [];
+    await stubAmfa(page, { realm: realmName, onWrite: (w) => writes.push(w) });
     await goToAdaptiveMfa(page, realmName);
 
     await expect(saveButton(page)).toBeEnabled();
@@ -205,5 +315,35 @@ test.describe.serial("Adaptive MFA error handling", () => {
     await saveButton(page).click();
 
     await expect(alert(page)).toContainText("All the data are saved");
+    // The realm attributes carry the AMFA toggle, so they go last. The scoring
+    // config is unchanged, so it is not written: every write counts against
+    // the engine's config write limit.
+    expect(writes.map((w) => w.kind)).toEqual(["settings", "realm"]);
+  });
+
+  test("a changed scoring config is written, and only once", async ({ page }) => {
+    const writes: Write[] = [];
+    await stubAmfa(page, { realm: realmName, onWrite: (w) => writes.push(w) });
+    await goToAdaptiveMfa(page, realmName);
+    await page.locator("#scoringMode").selectOption("bayesian");
+    await page.locator("#scoring-thresholds").fill("0.3, 0.6, 0.85");
+
+    await saveButton(page).click();
+    await expect(alert(page)).toContainText("All the data are saved");
+    expect(writes.map((w) => w.kind)).toEqual(["settings", "scoring", "realm"]);
+    expect(writes[1].payload).toEqual({ mode: "bayesian", thresholds: [0.3, 0.6, 0.85] });
+
+    // Saving again without touching scoring does not resend it.
+    await alert(page).locator("button").first().click();
+    await saveButton(page).click();
+    await expect.poll(() => writes.length).toBe(5);
+    await expect(alert(page)).toContainText("All the data are saved");
+    expect(writes.map((w) => w.kind)).toEqual([
+      "settings",
+      "scoring",
+      "realm",
+      "settings",
+      "realm",
+    ]);
   });
 });

@@ -28,7 +28,7 @@ import {
   Tr,
 } from "@patternfly/react-table";
 import { useTranslation } from "react-i18next";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAdminClient } from "../../../admin-client";
 import "./css/amfa.css"
 import { useRealm } from "../../../context/realm-context/RealmContext";
@@ -36,6 +36,20 @@ import { HelpItem, useAlerts } from "@keycloak/keycloak-ui-shared";
 import MultiSelect from "../../components/MultiSelect";
 import fallbackCountries from '../../assets/countries.json';
 import { getAuthorizationHeaders } from "../../../utils/getAuthorizationHeaders";
+
+// Pause before the one retry of a failed AMFA write. Long enough for a config
+// lock or a restarting engine to clear, short enough that Save still feels quick.
+const AMFA_WRITE_RETRY_DELAY_MS = 1500;
+
+type ScoringPayload = { mode?: string; bias?: number; thresholds?: number[] };
+
+// A scoring config in one comparable form: the engine answers a missing value
+// as null, the form leaves it out.
+const sameScoring = (a: ScoringPayload | null, b: ScoringPayload | null) => {
+  const canonical = (c: ScoringPayload | null) =>
+    JSON.stringify([c?.mode ?? null, c?.bias ?? null, c?.thresholds ?? null]);
+  return a !== null && b !== null && canonical(a) === canonical(b);
+};
 
 const WEIGHT_OPTIONS = [
   { label: "Low", value: "1" },
@@ -213,6 +227,11 @@ export default function AdaptiveMFA() {
   // Set until both the settings and the scoring config have loaded. Until then
   // the form holds its built-in defaults too, so saving is blocked the same way.
   const [configLoading, setConfigLoading] = useState(true);
+  // The risk signals and scoring config as the engine holds them: as loaded, then
+  // as last saved. A save that fails part way writes these back, so the realm is
+  // never left with half of a save applied.
+  const savedSignals = useRef<unknown>(null);
+  const savedScoring = useRef<ScoringPayload | null>(null);
   const toggleSignal = (key: string) =>
     setExpandedSignals((prev) =>
       prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key],
@@ -1045,6 +1064,9 @@ export default function AdaptiveMFA() {
       });
       if (response.ok) {
         const data = await response.json();
+        savedScoring.current = data
+          ? { mode: data.mode, bias: data.bias, thresholds: data.thresholds }
+          : {};
         if (data) {
           setScoringMode(data.mode || "weight");
           setScoringBias(data.bias !== null && data.bias !== undefined ? String(data.bias) : "");
@@ -1071,9 +1093,10 @@ export default function AdaptiveMFA() {
 
   useEffect(() => {
     // Both loads catch their own errors, so this settles either way.
-    Promise.all([fetchData(), getScoringConfig()]).finally(() =>
-      setConfigLoading(false),
-    );
+    Promise.all([fetchData(), getScoringConfig()]).finally(() => {
+      savedSignals.current = buildSignalsPayload(getValues());
+      setConfigLoading(false);
+    });
     updateParameters();
     getCountries();
     getGroups();
@@ -1196,6 +1219,244 @@ export default function AdaptiveMFA() {
     return true;
   };
 
+  // The risk-signal payload for updateAdaptiveMFAParameters, built from form
+  // values. Also used on load, to keep what a failed save writes back.
+  const buildSignalsPayload = (data: AuthConfigSuper) => {
+    const parameterNames = [
+      { key: "client", name: "client" },
+      { key: "ipAddress", name: "ip_address" },
+      { key: "device", name: "device" },
+      { key: "operationSystem", name: "operating_system" },
+      { key: "browserWindow", name: "browser" },
+      { key: "dateTime", name: "date_time" },
+      { key: "riskTypeClass", name: "event_cluster_label" },
+      { key: "timeInterval", name: "time_interval" },
+      { key: "geoLoc", name: "country_name" },
+      { key: "clientLanguage", name: "system_language" },
+      { key: "screenResolution", name: "screen_resolution" },
+      { key: "vpnMask", name: "anonymous_detection" },
+      { key: "inActiveAcc", name: "inactive_account" },
+      { key: "concurrentSession", name: "concurrent_session" },
+      { key: "loginFailure", name: "login_failure" },
+      { key: "recentAccountChange", name: "recent_account_change" },
+      { key: "geoClusterLabel", name: "geolocation_cluster_label" },
+      { key: "impossibleTravel", name: "impossible_travel" },
+    ];
+
+    return {
+      parameters: parameterNames.flatMap(({ key, name }) => {
+        if (
+          key === "ipAddress" ||
+          key === "operationSystem" ||
+          key === "dateTime" ||
+          key === "geoLoc" ||
+          key === "vpnMask" ||
+          key === "inActiveAcc"
+        ) {
+          return (data as any)[key].map((entry: any, entryIndex: number) => {
+            const row: any = {
+              realm_id: realm,
+              disabled: entry.isDisabled,
+              weight: entry.weight,
+              parameter_name: name,
+              // The form field is camelCase `groupId`; the old snake_case
+              // read was always undefined, mislabeling every row "default".
+              group_id: entry.groupId || "default",
+              blacklist: [],
+              whitelist: [],
+            };
+            // The dormancy threshold is realm-level, so only the default-scope row
+            // carries it, and only when it is a usable positive integer. Empty, 0,
+            // negative and NaN are all omitted, which is how "unset, use the server
+            // default" reaches the engine.
+            // Clamped to a sane upper bound (100 years): the input has no max
+            // attribute enforced (PatternFly's Form renders noValidate), and a
+            // value beyond Java's Integer.MAX_VALUE makes Jackson reject the PUT
+            // in the SPI, silently discarding the whole page's changes.
+            if (key === "inActiveAcc" && entryIndex === 0) {
+              const days = Number(entry.inactiveDays);
+              if (Number.isFinite(days) && days >= 1) {
+                const MAX_INACTIVE_DAYS = 36500; // 100 years
+                row.inactive_days = Math.min(Math.floor(days), MAX_INACTIVE_DAYS);
+              }
+            }
+            return row;
+          });
+        } else {
+          return {
+            realm_id: realm,
+            disabled: (data as any)[key].isDisabled,
+            weight: (data as any)[key].weight,
+            parameter_name: name,
+            group_id: "default",
+            blacklist: [],
+            whitelist: [],
+          };
+        }
+      }),
+      extraParameter: {
+        osArray: data.operationSystem.map((os: any) => ({
+          whitelist: os.insertOSWhitelist
+            ? os.insertOSWhitelist
+                .split("##")
+                .map((osItem: string) => osItem.trim())
+            : [],
+          blacklist: os.insertOSBlacklist
+            ? os.insertOSBlacklist
+                .split("##")
+                .map((osItem: string) => osItem.trim())
+            : [],
+          group_id: os.groupId,
+        })),
+        ipAddressArray: data.ipAddress.map((ipAddress: any) => ({
+          whitelist: ipAddress.insertIPWhitelist
+            ? ipAddress.insertIPWhitelist
+                .split("##")
+                .map((ip: string) => ip.trim())
+            : [],
+          blacklist: ipAddress.insertIPBlacklist
+            ? ipAddress.insertIPBlacklist
+                .split("##")
+                .map((ip: string) => ip.trim())
+            : [],
+          group_id: ipAddress.groupId,
+        })),
+
+        timeArray: data.dateTime.map((dateTime: any) => ({
+          whitelist:
+            dateTime.startTimeWhitelist && dateTime.endTimeWhitelist
+              ? [
+                  `${dateTime.startTimeWhitelist}-${dateTime.endTimeWhitelist}`,
+                ]
+              : [],
+          blacklist:
+            dateTime.startTimeBlacklist && dateTime.endTimeBlacklist
+              ? [
+                  `${dateTime.startTimeBlacklist}-${dateTime.endTimeBlacklist}`,
+                ]
+              : [],
+          group_id: dateTime.groupId,
+        })),
+        vpnMaskArray: data.vpnMask.map((vpnMask: any) => ({
+          whitelist: vpnMask.insertVpnWhitelist
+            ? vpnMask.insertVpnWhitelist
+                .split("##")
+                .map((mask: string) => mask.trim())
+            : [],
+          blacklist: vpnMask.insertVpnBlacklist
+            ? vpnMask.insertVpnBlacklist
+                .split("##")
+                .map((mask: string) => mask.trim())
+            : [],
+          group_id: vpnMask.groupId,
+        })),
+        countryNameArray: data.geoLoc.map((geoLoc: any) => ({
+          whitelist: geoLoc.countriesWhitelist
+            ? geoLoc.countriesWhitelist
+            : [],
+          blacklist: geoLoc.countriesBlacklist
+            ? geoLoc.countriesBlacklist
+            : [],
+          group_id: geoLoc.groupId,
+        })),
+      },
+    };
+  };
+
+  // Checked before anything is written: the engine rejects thresholds that are not
+  // three ascending values within [0, 1], and a rejection after the risk signals
+  // were saved is exactly the half-applied save this page must not leave behind.
+  const buildScoringPayload = (): ScoringPayload | null => {
+    const payload: ScoringPayload = { mode: scoringMode };
+    if (scoringBias.trim() !== "") {
+      const bias = Number(scoringBias);
+      if (!Number.isFinite(bias)) {
+        addAlert(t("amfaScoringBiasInvalid"), AlertVariant.danger);
+        return null;
+      }
+      payload.bias = bias;
+    }
+    if (scoringThresholds.trim() !== "") {
+      const thresholds = scoringThresholds
+        .split(",")
+        .map((value) => (value.trim() === "" ? NaN : Number(value.trim())));
+      const [low, mid, high] = thresholds;
+      if (
+        thresholds.length !== 3 ||
+        !thresholds.every(Number.isFinite) ||
+        !(0 <= low && low < mid && mid < high && high <= 1)
+      ) {
+        addAlert(t("amfaScoringThresholdsInvalid"), AlertVariant.danger);
+        return null;
+      }
+      payload.thresholds = thresholds;
+    }
+    return payload;
+  };
+
+  // Sends one AMFA write and retries it once after a short pause. Returns null on
+  // success, otherwise the failure. The SPI answers every engine error with a
+  // 502, so a passing condition (the config write limit, the config lock, an
+  // engine restart) cannot be told apart from a rejection; one retry is cheap
+  // either way.
+  const writeAmfa = async (path: string, body: unknown): Promise<string | null> => {
+    let failure = "";
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt > 0) {
+        await new Promise((resolve) => setTimeout(resolve, AMFA_WRITE_RETRY_DELAY_MS));
+      }
+      try {
+        const response = await fetch(
+          `${adminClient.baseUrl}/realms/${adminClient.realmName}/amfa-api/${path}`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...getAuthorizationHeaders(await adminClient.getAccessToken()),
+            },
+            body: JSON.stringify(body),
+          },
+        );
+        if (response.ok) {
+          return null;
+        }
+        failure = `HTTP ${response.status}: ${await response.text()}`;
+      } catch (error) {
+        failure = error instanceof Error ? error.message : String(error);
+      }
+    }
+    return failure;
+  };
+
+  // Writes back, newest first, what a failed save had already changed, and words
+  // the outcome so the admin knows whether anything is left half saved.
+  const undoSave = async (
+    reason: string,
+    steps: ("signals" | "scoring")[],
+  ): Promise<string> => {
+    const notRestored: string[] = [];
+    for (const step of steps) {
+      const previous = step === "signals" ? savedSignals.current : savedScoring.current;
+      const failure =
+        previous === null
+          ? "nothing to restore"
+          : await writeAmfa(
+              step === "signals" ? "updateAdaptiveMFAParameters" : "updateScoringConfig",
+              previous,
+            );
+      if (failure) {
+        notRestored.push(step === "signals" ? "risk signals" : "scoring config");
+      }
+    }
+    if (notRestored.length === 0) {
+      return `${reason}. Nothing was changed: the earlier part of the save was put back.`;
+    }
+    return (
+      `${reason}, and putting back the ${notRestored.join(" and ")} failed too, ` +
+      `so the new ${notRestored.join(" and ")} stay saved. Press Save again to finish the save.`
+    );
+  };
+
   const onSubmit = async (data: AuthConfigSuper) => {
     // Defence in depth behind the disabled Save button, which is what actually
     // prevents this today: browsers suppress implicit form submission while the
@@ -1224,9 +1485,12 @@ export default function AdaptiveMFA() {
         return false;
       }
 
-      const realmRep = await adminClient.realms.findOne({ realm });
-      const url = `${adminClient.baseUrl}/realms/${adminClient.realmName}/amfa-api/updateAdaptiveMFAParameters`;
+      const scoringPayload = buildScoringPayload();
+      if (!scoringPayload) {
+        return false;
+      }
 
+      const realmRep = await adminClient.realms.findOne({ realm });
       const updatedAttributes = {
         ...realmRep,
         attributes: {
@@ -1240,199 +1504,40 @@ export default function AdaptiveMFA() {
           notifyUsersRiskyLogin: data.necessaryParameters.notifyUsersRiskyLogin,
         },
       };
-      await adminClient.realms.update({ realm }, updatedAttributes);
-      const parameterNames = [
-        { key: "client", name: "client" },
-        { key: "ipAddress", name: "ip_address" },
-        { key: "device", name: "device" },
-        { key: "operationSystem", name: "operating_system" },
-        { key: "browserWindow", name: "browser" },
-        { key: "dateTime", name: "date_time" },
-        { key: "riskTypeClass", name: "event_cluster_label" },
-        { key: "timeInterval", name: "time_interval" },
-        { key: "geoLoc", name: "country_name" },
-        { key: "clientLanguage", name: "system_language" },
-        { key: "screenResolution", name: "screen_resolution" },
-        { key: "vpnMask", name: "anonymous_detection" },
-        { key: "inActiveAcc", name: "inactive_account" },
-        { key: "concurrentSession", name: "concurrent_session" },
-        { key: "loginFailure", name: "login_failure" },
-        { key: "recentAccountChange", name: "recent_account_change" },
-        { key: "geoClusterLabel", name: "geolocation_cluster_label" },
-        { key: "impossibleTravel", name: "impossible_travel" },
-      ];
+      const signalsPayload = buildSignalsPayload(data);
 
-      const formattedData = {
-        parameters: parameterNames.flatMap(({ key, name }) => {
-          if (
-            key === "ipAddress" ||
-            key === "operationSystem" ||
-            key === "dateTime" ||
-            key === "geoLoc" ||
-            key === "vpnMask" ||
-            key === "inActiveAcc"
-          ) {
-            return (data as any)[key].map((entry: any, entryIndex: number) => {
-              const row: any = {
-                realm_id: realmRep?.realm,
-                disabled: entry.isDisabled,
-                weight: entry.weight,
-                parameter_name: name,
-                // The form field is camelCase `groupId`; the old snake_case
-                // read was always undefined, mislabeling every row "default".
-                group_id: entry.groupId || "default",
-                blacklist: [],
-                whitelist: [],
-              };
-              // The dormancy threshold is realm-level, so only the default-scope row
-              // carries it, and only when it is a usable positive integer. Empty, 0,
-              // negative and NaN are all omitted, which is how "unset, use the server
-              // default" reaches the engine.
-              // Clamped to a sane upper bound (100 years): the input has no max
-              // attribute enforced (PatternFly's Form renders noValidate), and a
-              // value beyond Java's Integer.MAX_VALUE makes Jackson reject the PUT
-              // in the SPI, silently discarding the whole page's changes.
-              if (key === "inActiveAcc" && entryIndex === 0) {
-                const days = Number(entry.inactiveDays);
-                if (Number.isFinite(days) && days >= 1) {
-                  const MAX_INACTIVE_DAYS = 36500; // 100 years
-                  row.inactive_days = Math.min(Math.floor(days), MAX_INACTIVE_DAYS);
-                }
-              }
-              return row;
-            });
-          } else {
-            return {
-              realm_id: realmRep?.realm,
-              disabled: (data as any)[key].isDisabled,
-              weight: (data as any)[key].weight,
-              parameter_name: name,
-              group_id: "default",
-              blacklist: [],
-              whitelist: [],
-            };
-          }
-        }),
-        extraParameter: {
-          osArray: data.operationSystem.map((os: any) => ({
-            whitelist: os.insertOSWhitelist
-              ? os.insertOSWhitelist
-                  .split("##")
-                  .map((osItem: string) => osItem.trim())
-              : [],
-            blacklist: os.insertOSBlacklist
-              ? os.insertOSBlacklist
-                  .split("##")
-                  .map((osItem: string) => osItem.trim())
-              : [],
-            group_id: os.groupId,
-          })),
-          ipAddressArray: data.ipAddress.map((ipAddress: any) => ({
-            whitelist: ipAddress.insertIPWhitelist
-              ? ipAddress.insertIPWhitelist
-                  .split("##")
-                  .map((ip: string) => ip.trim())
-              : [],
-            blacklist: ipAddress.insertIPBlacklist
-              ? ipAddress.insertIPBlacklist
-                  .split("##")
-                  .map((ip: string) => ip.trim())
-              : [],
-            group_id: ipAddress.groupId,
-          })),
-
-          timeArray: data.dateTime.map((dateTime: any) => ({
-            whitelist:
-              dateTime.startTimeWhitelist && dateTime.endTimeWhitelist
-                ? [
-                    `${dateTime.startTimeWhitelist}-${dateTime.endTimeWhitelist}`,
-                  ]
-                : [],
-            blacklist:
-              dateTime.startTimeBlacklist && dateTime.endTimeBlacklist
-                ? [
-                    `${dateTime.startTimeBlacklist}-${dateTime.endTimeBlacklist}`,
-                  ]
-                : [],
-            group_id: dateTime.groupId,
-          })),
-          vpnMaskArray: data.vpnMask.map((vpnMask: any) => ({
-            whitelist: vpnMask.insertVpnWhitelist
-              ? vpnMask.insertVpnWhitelist
-                  .split("##")
-                  .map((mask: string) => mask.trim())
-              : [],
-            blacklist: vpnMask.insertVpnBlacklist
-              ? vpnMask.insertVpnBlacklist
-                  .split("##")
-                  .map((mask: string) => mask.trim())
-              : [],
-            group_id: vpnMask.groupId,
-          })),
-          countryNameArray: data.geoLoc.map((geoLoc: any) => ({
-            whitelist: geoLoc.countriesWhitelist
-              ? geoLoc.countriesWhitelist
-              : [],
-            blacklist: geoLoc.countriesBlacklist
-              ? geoLoc.countriesBlacklist
-              : [],
-            group_id: geoLoc.groupId,
-          })),
-        },
-      };
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...getAuthorizationHeaders(await adminClient.getAccessToken()),
-        },
-        body: JSON.stringify(formattedData),
-      });
-      // `fetch` only rejects on a network-level failure, so a 4xx/5xx resolves
-      // normally and would otherwise fall through to the success alert below,
-      // reporting "saved" for a save the server rejected. Throw instead and let
-      // the existing catch surface it. The body carries the engine's own error
-      // text via the SPI, so include it rather than a bare status code.
-      if (!response.ok) {
+      // Engine first, realm attributes last: the attributes carry the AMFA toggle,
+      // so AMFA is never switched on before the engine holds its config. When a
+      // later write fails, the earlier ones are written back as they were, so a
+      // save applies as a whole or not at all.
+      const signalsFailure = await writeAmfa("updateAdaptiveMFAParameters", signalsPayload);
+      if (signalsFailure) {
+        throw new Error(`Saving risk signals failed (${signalsFailure}). Nothing was changed.`);
+      }
+      // Each write counts against the engine's config write limit, so an
+      // unchanged scoring config is not sent again.
+      const scoringChanged = !sameScoring(scoringPayload, savedScoring.current);
+      if (scoringChanged) {
+        const scoringFailure = await writeAmfa("updateScoringConfig", scoringPayload);
+        if (scoringFailure) {
+          throw new Error(
+            await undoSave(`Saving the scoring config failed (${scoringFailure})`, ["signals"]),
+          );
+        }
+      }
+      try {
+        await adminClient.realms.update({ realm }, updatedAttributes);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
         throw new Error(
-          `Saving risk signals failed (HTTP ${response.status}): ${await response.text()}`,
+          await undoSave(
+            `Saving the realm settings failed (${reason})`,
+            scoringChanged ? ["scoring", "signals"] : ["signals"],
+          ),
         );
       }
-
-      // Persist the per-realm risk-scoring config (mode/bias/thresholds).
-      const scoringPayload: {
-        mode: string;
-        bias?: number;
-        thresholds?: number[];
-      } = { mode: scoringMode };
-      if (scoringBias.trim() !== "") {
-        scoringPayload.bias = Number(scoringBias);
-      }
-      if (scoringThresholds.trim() !== "") {
-        scoringPayload.thresholds = scoringThresholds
-          .split(",")
-          .map((value) => Number(value.trim()));
-      }
-      const scoringResponse = await fetch(
-        `${adminClient.baseUrl}/realms/${adminClient.realmName}/amfa-api/updateScoringConfig`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...getAuthorizationHeaders(await adminClient.getAccessToken()),
-          },
-          body: JSON.stringify(scoringPayload),
-        },
-      );
-      // These are two independent writes, so this one can fail after the signals
-      // above were persisted. Name the step in the message so the admin knows the
-      // save was partial rather than assuming nothing was written.
-      if (!scoringResponse.ok) {
-        throw new Error(
-          `Risk signals were saved, but saving the scoring config failed ` +
-            `(HTTP ${scoringResponse.status}): ${await scoringResponse.text()}`,
-        );
-      }
+      savedSignals.current = signalsPayload;
+      savedScoring.current = scoringPayload;
 
       addAlert("All the data are saved", AlertVariant.success);
     } catch (error) {
