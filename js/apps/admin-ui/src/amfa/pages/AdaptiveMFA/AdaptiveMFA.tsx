@@ -43,6 +43,21 @@ const AMFA_WRITE_RETRY_DELAY_MS = 1500;
 
 type ScoringPayload = { mode?: string; bias?: number; thresholds?: number[] };
 
+// The SPI reports an engine refusal as "AMFA engine returned HTTP <status>: ...",
+// so the engine's config write limit is recognised from that text. A refusal is
+// not counted against the limit, and the window slides, so the one retry is
+// still worth making.
+const isWriteLimited = (failure: string | null) =>
+  !!failure && /(returned HTTP|^HTTP) 429\b/.test(failure);
+
+const WRITE_LIMITED =
+  "The AMFA engine refused the save because this realm's configuration was " +
+  "changed too often in the last minute";
+
+// A save refused by the write limit. Shown as it is, without the generic
+// "An error occurred" prefix or the raw engine response.
+class WriteLimitError extends Error {}
+
 // A scoring config in one comparable form: the engine answers a missing value
 // as null, the form leaves it out.
 const sameScoring = (a: ScoringPayload | null, b: ScoringPayload | null) => {
@@ -1433,6 +1448,7 @@ export default function AdaptiveMFA() {
   const undoSave = async (
     reason: string,
     steps: ("signals" | "scoring")[],
+    writeLimited = false,
   ): Promise<string> => {
     const notRestored: string[] = [];
     for (const step of steps) {
@@ -1448,12 +1464,16 @@ export default function AdaptiveMFA() {
         notRestored.push(step === "signals" ? "risk signals" : "scoring config");
       }
     }
+    const again = writeLimited ? "Wait a minute, then press Save again" : "Press Save again";
     if (notRestored.length === 0) {
-      return `${reason}. Nothing was changed: the earlier part of the save was put back.`;
+      return (
+        `${reason}. Nothing was changed: the earlier part of the save was put back.` +
+        (writeLimited ? ` ${again}.` : "")
+      );
     }
     return (
       `${reason}, and putting back the ${notRestored.join(" and ")} failed too, ` +
-      `so the new ${notRestored.join(" and ")} stay saved. Press Save again to finish the save.`
+      `so the new ${notRestored.join(" and ")} stay saved. ${again} to finish the save.`
     );
   };
 
@@ -1511,6 +1531,11 @@ export default function AdaptiveMFA() {
       // later write fails, the earlier ones are written back as they were, so a
       // save applies as a whole or not at all.
       const signalsFailure = await writeAmfa("updateAdaptiveMFAParameters", signalsPayload);
+      if (isWriteLimited(signalsFailure)) {
+        throw new WriteLimitError(
+          `${WRITE_LIMITED}. Nothing was changed. Wait a minute, then press Save again.`,
+        );
+      }
       if (signalsFailure) {
         throw new Error(`Saving risk signals failed (${signalsFailure}). Nothing was changed.`);
       }
@@ -1519,6 +1544,9 @@ export default function AdaptiveMFA() {
       const scoringChanged = !sameScoring(scoringPayload, savedScoring.current);
       if (scoringChanged) {
         const scoringFailure = await writeAmfa("updateScoringConfig", scoringPayload);
+        if (isWriteLimited(scoringFailure)) {
+          throw new WriteLimitError(await undoSave(WRITE_LIMITED, ["signals"], true));
+        }
         if (scoringFailure) {
           throw new Error(
             await undoSave(`Saving the scoring config failed (${scoringFailure})`, ["signals"]),
@@ -1541,6 +1569,10 @@ export default function AdaptiveMFA() {
 
       addAlert("All the data are saved", AlertVariant.success);
     } catch (error) {
+      if (error instanceof WriteLimitError) {
+        addAlert(error.message, AlertVariant.danger);
+        return;
+      }
       // Pass the KEY, not t(key). addError does t(messageKey, { error }), so a
       // pre-translated string arrives as an unknown key and the {{error}} detail
       // never gets interpolated — which silently discarded the reason for the

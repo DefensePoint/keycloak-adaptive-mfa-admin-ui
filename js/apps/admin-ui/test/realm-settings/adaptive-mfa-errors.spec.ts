@@ -7,6 +7,7 @@ import {
   daysField,
   EFFECTIVE_DAYS,
   ENGINE_DOWN_BODY,
+  WRITE_LIMIT_BODY,
   expandSignal,
   goToAdaptiveMfa,
   savedDormancyRow,
@@ -196,6 +197,101 @@ test.describe.serial("Adaptive MFA error handling", () => {
       "Thresholds must be three ascending numbers between 0 and 1",
     );
     expect(writes).toEqual([]);
+  });
+
+  test("the write limit gets a plain message, not the raw engine response", async ({
+    page,
+  }) => {
+    const writes: Write[] = [];
+    await stubAmfa(page, {
+      realm: realmName,
+      settingsPut: { status: 502, body: WRITE_LIMIT_BODY },
+      onWrite: (w) => writes.push(w),
+    });
+    await goToAdaptiveMfa(page, realmName);
+
+    await saveButton(page).click();
+
+    await expect(alert(page)).toContainText(
+      "changed too often in the last minute. Nothing was changed. Wait a minute, then press Save again.",
+    );
+    await expect(alert(page)).not.toContainText("An error occurred");
+    await expect(alert(page)).not.toContainText("502");
+    await expect(alert(page)).not.toContainText("Rate limit exceeded");
+    // Refused writes do not count against the limit, so the one retry is kept.
+    expect(writes.map((w) => w.kind)).toEqual(["settings", "settings"]);
+  });
+
+  test("the write limit on scoring after the signals were put back", async ({ page }) => {
+    await stubAmfa(page, {
+      realm: realmName,
+      scoringPut: { status: 502, body: WRITE_LIMIT_BODY },
+    });
+    await goToAdaptiveMfa(page, realmName);
+    await page.locator("#scoringMode").selectOption("bayesian");
+
+    await saveButton(page).click();
+
+    await expect(alert(page)).toContainText("changed too often in the last minute");
+    await expect(alert(page)).toContainText(
+      "Nothing was changed: the earlier part of the save was put back. Wait a minute, then press Save again.",
+    );
+    await expect(alert(page)).not.toContainText("An error occurred");
+  });
+
+  test("the write limit on scoring when putting the signals back is refused too", async ({
+    page,
+  }) => {
+    await stubAmfa(page, {
+      realm: realmName,
+      settingsPut: [
+        { status: 200, body: '"success"' },
+        { status: 502, body: WRITE_LIMIT_BODY },
+      ],
+      scoringPut: { status: 502, body: WRITE_LIMIT_BODY },
+    });
+    await goToAdaptiveMfa(page, realmName);
+    await page.locator("#scoringMode").selectOption("bayesian");
+
+    await saveButton(page).click();
+
+    await expect(alert(page)).toContainText("changed too often in the last minute");
+    await expect(alert(page)).toContainText(
+      "so the new risk signals stay saved. Wait a minute, then press Save again to finish the save.",
+    );
+    await expect(alert(page)).not.toContainText("Rate limit exceeded");
+  });
+
+  test("a 429 passed through as is is recognised too", async ({ page }) => {
+    await stubAmfa(page, {
+      realm: realmName,
+      settingsPut: {
+        status: 429,
+        body: '{"success":false,"message":"Rate limit exceeded"}',
+      },
+    });
+    await goToAdaptiveMfa(page, realmName);
+
+    await saveButton(page).click();
+
+    await expect(alert(page)).toContainText("changed too often in the last minute");
+    await expect(alert(page)).not.toContainText("An error occurred");
+  });
+
+  test("other engine errors keep their detail", async ({ page }) => {
+    await stubAmfa(page, {
+      realm: realmName,
+      settingsPut: {
+        status: 502,
+        body: JSON.stringify({ error: "AMFA engine returned HTTP 4290: odd" }),
+      },
+    });
+    await goToAdaptiveMfa(page, realmName);
+
+    await saveButton(page).click();
+
+    await expect(alert(page)).toContainText("Saving risk signals failed");
+    await expect(alert(page)).toContainText("HTTP 4290");
   });
 
   test("a failed settings load blocks saving over live config", async ({
