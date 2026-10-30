@@ -10,9 +10,12 @@ import {
   CardTitle,
   Form,
   FormGroup,
+  FormHelperText,
   FormSection,
   FormSelect,
   FormSelectOption,
+  HelperText,
+  HelperTextItem,
   Switch,
   TextArea,
   TextInput,
@@ -50,9 +53,13 @@ type ScoringPayload = { mode?: string; bias?: number; thresholds?: number[] };
 const isWriteLimited = (failure: string | null) =>
   !!failure && /(returned HTTP|^HTTP) 429\b/.test(failure);
 
-const WRITE_LIMITED =
-  "The AMFA engine refused the save because this realm's configuration was " +
-  "changed too often in the last minute";
+// A 4xx from the engine or from Keycloak is a refusal, so the write was not
+// applied. Anything else (no answer, the engine unreachable or failing) may have
+// reached the engine before the answer was lost.
+const isRefusal = (failure: string) =>
+  /(returned HTTP|^HTTP) 4\d\d\b/.test(failure);
+
+type WriteResult = { failure: string | null; unsure: boolean };
 
 // A save refused by the write limit. Shown as it is, without the generic
 // "An error occurred" prefix or the raw engine response.
@@ -247,6 +254,11 @@ export default function AdaptiveMFA() {
   // never left with half of a save applied.
   const savedSignals = useRef<unknown>(null);
   const savedScoring = useRef<ScoringPayload | null>(null);
+  // Set while a save runs. A second save started meanwhile would compare against
+  // the same stale saved state, and its put-back could undo the first save.
+  // The ref closes the gap before the disabled button renders.
+  const [saving, setSaving] = useState(false);
+  const savingNow = useRef(false);
   const toggleSignal = (key: string) =>
     setExpandedSignals((prev) =>
       prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key],
@@ -314,6 +326,24 @@ export default function AdaptiveMFA() {
             : key === "operationSystem"
               ? "insertOSBlacklist"
               : "insertVpnBlacklist";
+        // The IP list a save was refused for stays marked until the next save,
+        // since the alert that named the bad entries disappears.
+        const invalidIps = (list: "allow" | "deny") =>
+          key === "ipAddress" &&
+          ipError?.index === index &&
+          ipError.list === list
+            ? ipError.ips
+            : null;
+        const ipErrorText = (ips: string | null) =>
+          ips !== null && (
+            <FormHelperText>
+              <HelperText>
+                <HelperTextItem variant="error">
+                  {t("amfaInvalidIps", { ips })}
+                </HelperTextItem>
+              </HelperText>
+            </FormHelperText>
+          );
         return (
           <>
             <FormGroup label={t("amfaAllowList")} fieldId={`${key}-wl-${index}`}>
@@ -322,8 +352,10 @@ export default function AdaptiveMFA() {
                 name={`${key}.${index}.${wl}`}
                 aria-label={t("amfaAllowList")}
                 addButtonLabel="amfaAddValue"
+                validated={invalidIps("allow") !== null ? "error" : "default"}
                 stringify
               />
+              {ipErrorText(invalidIps("allow"))}
             </FormGroup>
             <FormGroup label={t("amfaDenyList")} fieldId={`${key}-bl-${index}`}>
               <MultiLineInput
@@ -331,8 +363,10 @@ export default function AdaptiveMFA() {
                 name={`${key}.${index}.${bl}`}
                 aria-label={t("amfaDenyList")}
                 addButtonLabel="amfaAddValue"
+                validated={invalidIps("deny") !== null ? "error" : "default"}
                 stringify
               />
+              {ipErrorText(invalidIps("deny"))}
             </FormGroup>
           </>
         );
@@ -552,7 +586,7 @@ export default function AdaptiveMFA() {
       case "ipAddress":
         return renderEditor("ipAddress", fields, append, remove, {
           isDisabled: "true",
-          weight: "1",
+          weight: "3",
           insertIPWhitelist: "",
           insertIPBlacklist: "",
           groupId: "",
@@ -563,12 +597,12 @@ export default function AdaptiveMFA() {
           operationSystemFields,
           appendOperationSystem,
           removeOperationSystem,
-          { isDisabled: "true", weight: "1", insertOSWhitelist: "", insertOSBlacklist: "", groupId: "" },
+          { isDisabled: "true", weight: "3", insertOSWhitelist: "", insertOSBlacklist: "", groupId: "" },
         );
       case "dateTime":
         return renderEditor("dateTime", dateTimeFields, appendDataTime, removeDataTime, {
           isDisabled: "true",
-          weight: "1",
+          weight: "2",
           startTimeWhitelist: "",
           endTimeWhitelist: "",
           startTimeBlacklist: "",
@@ -578,7 +612,7 @@ export default function AdaptiveMFA() {
       case "geoLoc":
         return renderEditor("geoLoc", geoLocFields, appendGeoLoc, removeGeoLoc, {
           isDisabled: "true",
-          weight: "1",
+          weight: "3",
           countriesWhitelist: [],
           countriesBlacklist: [],
           groupId: "",
@@ -586,7 +620,7 @@ export default function AdaptiveMFA() {
       case "vpnMask":
         return renderEditor("vpnMask", vpnMaskFields, appendVpnMask, removeVpnMask, {
           isDisabled: "true",
-          weight: "1",
+          weight: "3",
           insertVpnWhitelist: "",
           insertVpnBlacklist: "",
           groupId: "",
@@ -597,12 +631,15 @@ export default function AdaptiveMFA() {
           inActiveAccFields,
           appendInActiveAcc,
           removeInActiveAcc,
-          { isDisabled: "true", weight: "1", groupId: "" },
+          { isDisabled: "true", weight: "3", groupId: "" },
         );
       default:
         return null;
     }
   };
+  // The weights below, and those of new group overrides above, are the engine's
+  // own defaults (DEFAULT_DECISION_PARAMS), so a signal the engine sends no row
+  // for shows, and saves, what the engine would use anyway.
   const methods = useForm<AuthConfigSuper>({
       defaultValues: {
         necessaryParameters: {
@@ -613,36 +650,36 @@ export default function AdaptiveMFA() {
         },
         client: {
           isDisabled: "true",
-          weight: "1",
+          weight: "3",
         },
         ipAddress: [
           {
             isDisabled: "true",
-            weight: "1",
+            weight: "3",
             insertIPWhitelist: "",
             insertIPBlacklist: "",
           },
         ],
         device: {
           isDisabled: "true",
-          weight: "1",
+          weight: "3",
         },
         operationSystem: [
           {
             isDisabled: "true",
-            weight: "1",
+            weight: "3",
             insertOSWhitelist: "",
             insertOSBlacklist: "",
           },
         ],
         browserWindow: {
           isDisabled: "true",
-          weight: "1",
+          weight: "3",
         },
         dateTime: [
           {
             isDisabled: "true",
-            weight: "1",
+            weight: "2",
             startTimeWhitelist: "",
             endTimeWhitelist: "",
             startTimeBlacklist: "",
@@ -651,32 +688,32 @@ export default function AdaptiveMFA() {
         ],
         riskTypeClass: {
           isDisabled: "true",
-          weight: "1",
+          weight: "2",
         },
         timeInterval: {
           isDisabled: "true",
-          weight: "1",
+          weight: "2",
         },
         geoLoc: [
           {
             isDisabled: "true",
-            weight: "1",
+            weight: "3",
             countriesWhitelist: countryOptions,
             countriesBlacklist: countryOptions,
           },
         ],
         clientLanguage: {
           isDisabled: "true",
-          weight: "1",
+          weight: "3",
         },
         screenResolution: {
           isDisabled: "true",
-          weight: "1",
+          weight: "3",
         },
         vpnMask: [
           {
             isDisabled: "true",
-            weight: "1",
+            weight: "3",
             insertVpnWhitelist: "",
             insertVpnBlacklist: "",
           },
@@ -684,29 +721,29 @@ export default function AdaptiveMFA() {
         inActiveAcc: [
           {
             isDisabled: "true",
-            weight: "1",
+            weight: "3",
             inactiveDays: 0,
           },
         ],
         concurrentSession: {
           isDisabled: "true",
-          weight: "1",
+          weight: "3",
         },
         loginFailure: {
           isDisabled: "true",
-          weight: "1",
+          weight: "3",
         },
         recentAccountChange: {
           isDisabled: "true",
-          weight: "1",
+          weight: "3",
         },
         geoClusterLabel: {
           isDisabled: "true",
-          weight: "1",
+          weight: "3",
         },
         impossibleTravel: {
           isDisabled: "true",
-          weight: "1",
+          weight: "3",
         },
       },
     });
@@ -1148,15 +1185,17 @@ export default function AdaptiveMFA() {
     }
   }
 
-  /* IP Addresses error state variables */
-  const [ipWhitelistErrorIndex, setIpWhitelistErrorIndex] = useState<number | null>(null);
-  const [ipBlacklistErrorIndex, setIpBlacklistErrorIndex] = useState<number | null>(null);
+  /* The IP list the last save was refused for, and its invalid entries */
+  const [ipError, setIpError] = useState<{
+    index: number;
+    list: "allow" | "deny";
+    ips: string;
+  } | null>(null);
 
   /* Function to validate if the whitelists/blacklists of IP adrresses are valid */
   const validateIpsBlacklistWhitelist = (ipAddress: any, index: number): boolean => {
-    // Cleaning the error states
-    setIpWhitelistErrorIndex(null);
-    setIpBlacklistErrorIndex(null);
+    // Cleaning the error state
+    setIpError(null);
 
     // Validate if a string is a valid ipv4 or ipv6
     function isValidIP(ip: string): boolean {
@@ -1185,13 +1224,16 @@ export default function AdaptiveMFA() {
     // (namespace/key separators in i18next) mis-parses into a blank toast - so
     // the save was blocked with no visible error. addAlert renders the message
     // verbatim as a danger toast.
+    // An empty row is named, so the message never ends in a blank.
+    const named = (ips: string[]) =>
+      ips.map((ip) => (ip === "" ? t("amfaEmptyEntry") : ip)).join(", ");
     if (invalidWhitelist.length > 0) {
-      addAlert(`Invalid IPs on allow list: ${invalidWhitelist.join(", ")}`, AlertVariant.danger);
-      setIpWhitelistErrorIndex(index);
+      addAlert(`Invalid IPs on allow list: ${named(invalidWhitelist)}`, AlertVariant.danger);
+      setIpError({ index, list: "allow", ips: named(invalidWhitelist) });
       return false;
     } else if (invalidBlacklist.length > 0) {
-      addAlert(`Invalid IPs on deny list: ${invalidBlacklist.join(", ")}`, AlertVariant.danger);
-      setIpBlacklistErrorIndex(index)
+      addAlert(`Invalid IPs on deny list: ${named(invalidBlacklist)}`, AlertVariant.danger);
+      setIpError({ index, list: "deny", ips: named(invalidBlacklist) });
       return false;
     }
   
@@ -1383,6 +1425,19 @@ export default function AdaptiveMFA() {
   // were saved is exactly the half-applied save this page must not leave behind.
   const buildScoringPayload = (): ScoringPayload | null => {
     const payload: ScoringPayload = { mode: scoringMode };
+    if (scoringMode !== "bayesian") {
+      // Bias and thresholds only apply in bayesian mode, the only mode that
+      // shows their fields. Keep what the engine holds instead of checking or
+      // sending edits the admin can no longer see.
+      const saved = savedScoring.current;
+      if (saved?.bias !== null && saved?.bias !== undefined) {
+        payload.bias = saved.bias;
+      }
+      if (saved?.thresholds !== null && saved?.thresholds !== undefined) {
+        payload.thresholds = saved.thresholds;
+      }
+      return payload;
+    }
     if (scoringBias.trim() !== "") {
       const bias = Number(scoringBias);
       if (!Number.isFinite(bias)) {
@@ -1409,20 +1464,29 @@ export default function AdaptiveMFA() {
     return payload;
   };
 
-  // Sends one AMFA write and retries it once after a short pause. Returns null on
-  // success, otherwise the failure. The SPI answers every engine error with a
-  // 502, so a passing condition (the config write limit, the config lock, an
-  // engine restart) cannot be told apart from a rejection; one retry is cheap
-  // either way.
-  const writeAmfa = async (path: string, body: unknown): Promise<string | null> => {
+  // Sends one AMFA write and retries it once after a short pause. The SPI answers
+  // every engine error with a 502, so a passing condition (the config write
+  // limit, the config lock, an engine restart) cannot be told apart from a
+  // rejection; one retry is cheap either way. `unsure` is set when a failed
+  // attempt may still have been applied.
+  //
+  // The realm is the one the save started in. adminClient.realmName follows the
+  // realm selector, so switching realms during a save would send the rest of it,
+  // put-backs included, to the other realm.
+  const writeAmfa = async (
+    saveRealm: string,
+    path: string,
+    body: unknown,
+  ): Promise<WriteResult> => {
     let failure = "";
+    let unsure = false;
     for (let attempt = 0; attempt < 2; attempt++) {
       if (attempt > 0) {
         await new Promise((resolve) => setTimeout(resolve, AMFA_WRITE_RETRY_DELAY_MS));
       }
       try {
         const response = await fetch(
-          `${adminClient.baseUrl}/realms/${adminClient.realmName}/amfa-api/${path}`,
+          `${adminClient.baseUrl}/realms/${saveRealm}/amfa-api/${path}`,
           {
             method: "POST",
             headers: {
@@ -1433,47 +1497,62 @@ export default function AdaptiveMFA() {
           },
         );
         if (response.ok) {
-          return null;
+          return { failure: null, unsure: false };
         }
         failure = `HTTP ${response.status}: ${await response.text()}`;
       } catch (error) {
         failure = error instanceof Error ? error.message : String(error);
       }
+      unsure = unsure || !isRefusal(failure);
     }
-    return failure;
+    return { failure, unsure };
   };
 
-  // Writes back, newest first, what a failed save had already changed, and words
-  // the outcome so the admin knows whether anything is left half saved.
+  // Writes back, newest first, what a failed save may have changed, and words the
+  // outcome so the admin knows whether anything is left half saved. `unsureStep`
+  // is the failed write itself when it may have been applied anyway.
   const undoSave = async (
+    saveRealm: string,
     reason: string,
     steps: ("signals" | "scoring")[],
     writeLimited = false,
+    unsureStep: "signals" | "scoring" | null = null,
   ): Promise<string> => {
-    const notRestored: string[] = [];
+    const notRestored: ("signals" | "scoring")[] = [];
     for (const step of steps) {
       const previous = step === "signals" ? savedSignals.current : savedScoring.current;
-      const failure =
+      const { failure } =
         previous === null
-          ? "nothing to restore"
+          ? { failure: "nothing to restore" }
           : await writeAmfa(
+              saveRealm,
               step === "signals" ? "updateAdaptiveMFAParameters" : "updateScoringConfig",
               previous,
             );
       if (failure) {
-        notRestored.push(step === "signals" ? "risk signals" : "scoring config");
+        notRestored.push(step);
       }
     }
-    const again = writeLimited ? "Wait a minute, then press Save again" : "Press Save again";
     if (notRestored.length === 0) {
       return (
-        `${reason}. Nothing was changed: the earlier part of the save was put back.` +
-        (writeLimited ? ` ${again}.` : "")
+        t("amfaSavePutBack", { reason }) +
+        (writeLimited ? ` ${t("amfaSaveWaitRetry")}` : "")
       );
     }
+    const parts = t(
+      notRestored.length === 2
+        ? "amfaSavePartBoth"
+        : notRestored[0] === "signals"
+          ? "amfaSavePartSignals"
+          : "amfaSavePartScoring",
+    );
     return (
-      `${reason}, and putting back the ${notRestored.join(" and ")} failed too, ` +
-      `so the new ${notRestored.join(" and ")} stay saved. ${again} to finish the save.`
+      t(
+        unsureStep !== null && notRestored.includes(unsureStep)
+          ? "amfaSaveNotPutBackUnsure"
+          : "amfaSaveNotPutBack",
+        { reason, parts },
+      ) + ` ${t(writeLimited ? "amfaSaveWaitFinish" : "amfaSaveFinish")}`
     );
   };
 
@@ -1492,6 +1571,12 @@ export default function AdaptiveMFA() {
       addError("amfaLoadError", new Error(t("amfaSaveBlockedLoadFailed")));
       return;
     }
+    if (savingNow.current) {
+      return;
+    }
+    savingNow.current = true;
+    setSaving(true);
+    const saveRealm = realm;
     try {
       // Validating the whitelists/blacklist ip inputs
       for (let index = 0; index < data.ipAddress.length; index++) {
@@ -1510,7 +1595,7 @@ export default function AdaptiveMFA() {
         return false;
       }
 
-      const realmRep = await adminClient.realms.findOne({ realm });
+      const realmRep = await adminClient.realms.findOne({ realm: saveRealm });
       const updatedAttributes = {
         ...realmRep,
         attributes: {
@@ -1530,36 +1615,60 @@ export default function AdaptiveMFA() {
       // so AMFA is never switched on before the engine holds its config. When a
       // later write fails, the earlier ones are written back as they were, so a
       // save applies as a whole or not at all.
-      const signalsFailure = await writeAmfa("updateAdaptiveMFAParameters", signalsPayload);
-      if (isWriteLimited(signalsFailure)) {
-        throw new WriteLimitError(
-          `${WRITE_LIMITED}. Nothing was changed. Wait a minute, then press Save again.`,
-        );
-      }
-      if (signalsFailure) {
-        throw new Error(`Saving risk signals failed (${signalsFailure}). Nothing was changed.`);
+      const signals = await writeAmfa(
+        saveRealm,
+        "updateAdaptiveMFAParameters",
+        signalsPayload,
+      );
+      if (signals.failure) {
+        const limited = isWriteLimited(signals.failure);
+        const reason = limited
+          ? t("amfaSaveWriteLimited")
+          : t("amfaSaveSignalsFailed", { error: signals.failure });
+        // Nothing earlier to put back. When the write may have been applied
+        // anyway, say so rather than claim nothing changed.
+        const finish = t(limited ? "amfaSaveWaitFinish" : "amfaSaveFinish");
+        const retry = limited ? ` ${t("amfaSaveWaitRetry")}` : "";
+        const message = signals.unsure
+          ? `${t("amfaSaveNotConfirmed", { reason })} ${finish}`
+          : t("amfaSaveNothingChanged", { reason }) + retry;
+        throw limited ? new WriteLimitError(message) : new Error(message);
       }
       // Each write counts against the engine's config write limit, so an
       // unchanged scoring config is not sent again.
       const scoringChanged = !sameScoring(scoringPayload, savedScoring.current);
       if (scoringChanged) {
-        const scoringFailure = await writeAmfa("updateScoringConfig", scoringPayload);
-        if (isWriteLimited(scoringFailure)) {
-          throw new WriteLimitError(await undoSave(WRITE_LIMITED, ["signals"], true));
-        }
-        if (scoringFailure) {
-          throw new Error(
-            await undoSave(`Saving the scoring config failed (${scoringFailure})`, ["signals"]),
+        const scoring = await writeAmfa(
+          saveRealm,
+          "updateScoringConfig",
+          scoringPayload,
+        );
+        if (scoring.failure) {
+          const limited = isWriteLimited(scoring.failure);
+          const message = await undoSave(
+            saveRealm,
+            limited
+              ? t("amfaSaveWriteLimited")
+              : t("amfaSaveScoringFailed", { error: scoring.failure }),
+            // A scoring write that may have been applied is put back too.
+            scoring.unsure ? ["scoring", "signals"] : ["signals"],
+            limited,
+            scoring.unsure ? "scoring" : null,
           );
+          throw limited ? new WriteLimitError(message) : new Error(message);
         }
       }
       try {
-        await adminClient.realms.update({ realm }, updatedAttributes);
+        await adminClient.realms.update(
+          { realm: saveRealm },
+          updatedAttributes,
+        );
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         throw new Error(
           await undoSave(
-            `Saving the realm settings failed (${reason})`,
+            saveRealm,
+            t("amfaSaveRealmFailed", { error: reason }),
             scoringChanged ? ["scoring", "signals"] : ["signals"],
           ),
         );
@@ -1578,6 +1687,9 @@ export default function AdaptiveMFA() {
       // never gets interpolated — which silently discarded the reason for the
       // failure. Every stock call site passes a bare key for this reason.
       addError("amfaError", error);
+    } finally {
+      savingNow.current = false;
+      setSaving(false);
     }
   };
 
@@ -1759,7 +1871,11 @@ export default function AdaptiveMFA() {
                 <FormGroup label={t("scoringBias")} fieldId="scoring-bias">
                   <TextInput
                     id="scoring-bias"
-                    type="number"
+                    // Text, not number: a number input reports anything it cannot
+                    // parse as empty, which would silently clear the stored bias
+                    // instead of reaching the bias check.
+                    type="text"
+                    inputMode="decimal"
                     placeholder="-3.9"
                     value={scoringBias}
                     onChange={(_event, value) => setScoringBias(value)}
@@ -1784,7 +1900,8 @@ export default function AdaptiveMFA() {
             <Button
               type="submit"
               variant="primary"
-              isDisabled={configLoading || configLoadFailed}
+              isDisabled={configLoading || configLoadFailed || saving}
+              isLoading={saving}
               data-testid="amfa-save"
             >
               {t("save")}
