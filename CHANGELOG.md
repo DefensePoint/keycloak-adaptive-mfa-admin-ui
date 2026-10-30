@@ -35,6 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - When the engine did not confirm a write, the message no longer claims that
   nothing was changed
 - The save messages can be translated
+- A signal the engine sends no row for, and a new group override, start at the
+  engine's own default weight instead of Low
+- An IP address that blocks a save stays marked on its allow or deny list,
+  with the invalid entries named under it, until the next save
+- The "Risk Classification" signal is now labelled "Event Cluster", and its
+  help text says what it checks
 
 ### Removed
 

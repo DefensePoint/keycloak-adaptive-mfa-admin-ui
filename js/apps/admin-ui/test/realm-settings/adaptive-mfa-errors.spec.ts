@@ -462,6 +462,63 @@ test.describe.serial("Adaptive MFA error handling", () => {
     expect(writes).toEqual([]);
   });
 
+  test("signals the engine sends no row for get the engine's default weights", async ({
+    page,
+  }) => {
+    // The stub only answers the client and dormancy rows.
+    let saved: any = null;
+    await stubAmfa(page, {
+      realm: realmName,
+      onSave: (payload) => (saved = payload),
+    });
+    await goToAdaptiveMfa(page, realmName);
+
+    await saveButton(page).click();
+    await expect(alert(page)).toContainText("All the data are saved");
+
+    const weightOf = (name: string) =>
+      Number(
+        saved.parameters.find(
+          (p: any) =>
+            p.parameter_name === name &&
+            (p.group_id ?? "default") === "default",
+        ).weight,
+      );
+    expect(weightOf("impossible_travel")).toBe(3);
+    expect(weightOf("event_cluster_label")).toBe(2);
+    expect(weightOf("geolocation_cluster_label")).toBe(3);
+    expect(weightOf("date_time")).toBe(2);
+    expect(weightOf("device")).toBe(3);
+  });
+
+  test("an invalid IP stays marked on its field until it is fixed", async ({
+    page,
+  }) => {
+    const writes: Write[] = [];
+    await stubAmfa(page, { realm: realmName, onWrite: (w) => writes.push(w) });
+    await goToAdaptiveMfa(page, realmName);
+    await expandSignal(page, "ipAddress");
+    const allow = page.getByTestId("ipAddress.0.insertIPWhitelist0");
+    await allow.fill("10.0.0.999");
+
+    await saveButton(page).click();
+
+    await expect(alert(page)).toContainText(
+      "Invalid IPs on allow list: 10.0.0.999",
+    );
+    await expect(allow).toHaveAttribute("aria-invalid", "true");
+    await expect(
+      page.getByText("Not a valid IP address: 10.0.0.999"),
+    ).toBeVisible();
+    expect(writes).toEqual([]);
+
+    await allow.fill("10.0.0.9");
+    await saveButton(page).click();
+    await expect(alert(page)).toContainText("All the data are saved");
+    await expect(allow).not.toHaveAttribute("aria-invalid", "true");
+    await expect(page.getByText("Not a valid IP address")).toHaveCount(0);
+  });
+
   test("a failed settings load blocks saving over live config", async ({
     page,
   }) => {
