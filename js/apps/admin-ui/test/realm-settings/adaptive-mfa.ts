@@ -174,10 +174,20 @@ export async function stubAmfa(page: Page, stubs: Stubs) {
   });
 }
 
-export async function goToAdaptiveMfa(page: Page, realm: string) {
+export async function goToAdaptiveMfa(
+  page: Page,
+  realm: string,
+  /**
+   * Runs before the page loads its configuration, after the rest of the
+   * console loaded. The Security defenses tabs all mount at once, so the
+   * page starts loading when that tab opens, not its own.
+   */
+  beforeOpen?: () => Promise<void>,
+) {
   await login(page);
   await goToRealm(page, realm);
   await goToRealmSettings(page);
+  await beforeOpen?.();
   await goToSecurityDefensesTab(page);
   await page.getByRole("tab", { name: "Adaptive MFA" }).click();
   // The whole form body, Save included, is gated behind this toggle, and a

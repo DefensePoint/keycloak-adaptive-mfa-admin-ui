@@ -549,6 +549,56 @@ test.describe.serial("Adaptive MFA error handling", () => {
     await expect(blockedNotice(page)).toBeVisible();
   });
 
+  test("a failed realm settings load also blocks saving", async ({ page }) => {
+    // The save writes the endpoint, fallback risk and notify setting back from
+    // the form, so saving after they failed to load would put defaults there.
+    const writes: Write[] = [];
+    await stubAmfa(page, { realm: realmName, onWrite: (w) => writes.push(w) });
+    await goToAdaptiveMfa(page, realmName, () =>
+      page.route(`**/admin/realms/${realmName}`, (r) =>
+        r.request().method() === "GET"
+          ? r.fulfill({ status: 500, body: '{"error":"unknown_error"}' })
+          : r.fallback(),
+      ),
+    );
+
+    await expect(alert(page)).toContainText(
+      "Could not load the current Adaptive MFA configuration",
+    );
+    await expect(saveButton(page)).toBeDisabled();
+    await expect(blockedNotice(page)).toBeVisible();
+    await page.evaluate(() => {
+      const save = document.querySelector('[data-testid="amfa-save"]');
+      (save?.closest("form") as HTMLFormElement | null)?.requestSubmit();
+    });
+    await expect(alert(page)).toContainText("Saving is disabled");
+    expect(writes).toEqual([]);
+  });
+
+  test("saving waits for the realm settings to load too", async ({ page }) => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let scoringLoaded!: Promise<unknown>;
+    await stubAmfa(page, { realm: realmName });
+    await goToAdaptiveMfa(page, realmName, async () => {
+      scoringLoaded = page.waitForResponse("**/amfa-api/fetchScoringConfig");
+      await page.route(`**/admin/realms/${realmName}`, async (r) => {
+        if (r.request().method() === "GET") {
+          await gate;
+        }
+        return r.fallback();
+      });
+    });
+
+    // The engine loads have answered; the realm settings have not.
+    await scoringLoaded;
+    await expect(saveButton(page)).toBeDisabled();
+
+    release();
+    await expect(saveButton(page)).toBeEnabled();
+    await expect(blockedNotice(page)).toHaveCount(0);
+  });
+
   test("submitting the form directly cannot bypass the load-failed guard", async ({
     page,
   }) => {
@@ -587,7 +637,7 @@ test.describe.serial("Adaptive MFA error handling", () => {
   test("saving stays blocked until the configuration has loaded", async ({
     page,
   }) => {
-    // Until both loads answer, the form holds its built-in defaults, so an early
+    // Until the loads answer, the form holds its built-in defaults, so an early
     // click would overwrite live config with them. A slow engine made this easy
     // to hit, and the button used to be enabled the whole time.
     let releaseSettings!: () => void;
