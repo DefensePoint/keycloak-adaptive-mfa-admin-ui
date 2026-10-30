@@ -80,6 +80,8 @@ test.describe.serial("Adaptive MFA error handling", () => {
       onWrite: (w) => writes.push(w),
     });
     await goToAdaptiveMfa(page, realmName);
+    // The stub loads "weight"; scoring is only written when it changed.
+    await page.locator("#scoringMode").selectOption("bayesian");
     await expandSignal(page, "inActiveAcc");
     await daysField(page).fill("77");
 
@@ -113,6 +115,8 @@ test.describe.serial("Adaptive MFA error handling", () => {
       onWrite: (w) => writes.push(w),
     });
     await goToAdaptiveMfa(page, realmName);
+    // The stub loads "weight"; scoring is only written when it changed.
+    await page.locator("#scoringMode").selectOption("bayesian");
 
     await saveButton(page).click();
 
@@ -138,6 +142,8 @@ test.describe.serial("Adaptive MFA error handling", () => {
       scoringPut: { status: 502, body: ENGINE_DOWN_BODY },
     });
     await goToAdaptiveMfa(page, realmName);
+    // The stub loads "weight"; scoring is only written when it changed.
+    await page.locator("#scoringMode").selectOption("bayesian");
 
     await saveButton(page).click();
 
@@ -156,6 +162,8 @@ test.describe.serial("Adaptive MFA error handling", () => {
       onWrite: (w) => writes.push(w),
     });
     await goToAdaptiveMfa(page, realmName);
+    // The stub loads "weight"; scoring is only written when it changed.
+    await page.locator("#scoringMode").selectOption("bayesian");
 
     await saveButton(page).click();
 
@@ -169,6 +177,7 @@ test.describe.serial("Adaptive MFA error handling", () => {
       "scoring",
       "settings",
     ]);
+    // Scoring is put back as loaded.
     expect(writes[3].payload).toEqual({ mode: "weight" });
   });
 
@@ -306,8 +315,35 @@ test.describe.serial("Adaptive MFA error handling", () => {
     await saveButton(page).click();
 
     await expect(alert(page)).toContainText("All the data are saved");
-    // The realm attributes carry the AMFA toggle, so they go last: AMFA is never
-    // switched on before the engine holds its config.
+    // The realm attributes carry the AMFA toggle, so they go last. The scoring
+    // config is unchanged, so it is not written: every write counts against
+    // the engine's config write limit.
+    expect(writes.map((w) => w.kind)).toEqual(["settings", "realm"]);
+  });
+
+  test("a changed scoring config is written, and only once", async ({ page }) => {
+    const writes: Write[] = [];
+    await stubAmfa(page, { realm: realmName, onWrite: (w) => writes.push(w) });
+    await goToAdaptiveMfa(page, realmName);
+    await page.locator("#scoringMode").selectOption("bayesian");
+    await page.locator("#scoring-thresholds").fill("0.3, 0.6, 0.85");
+
+    await saveButton(page).click();
+    await expect(alert(page)).toContainText("All the data are saved");
     expect(writes.map((w) => w.kind)).toEqual(["settings", "scoring", "realm"]);
+    expect(writes[1].payload).toEqual({ mode: "bayesian", thresholds: [0.3, 0.6, 0.85] });
+
+    // Saving again without touching scoring does not resend it.
+    await alert(page).locator("button").first().click();
+    await saveButton(page).click();
+    await expect.poll(() => writes.length).toBe(5);
+    await expect(alert(page)).toContainText("All the data are saved");
+    expect(writes.map((w) => w.kind)).toEqual([
+      "settings",
+      "scoring",
+      "realm",
+      "settings",
+      "realm",
+    ]);
   });
 });

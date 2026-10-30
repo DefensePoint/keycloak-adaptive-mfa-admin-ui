@@ -43,6 +43,14 @@ const AMFA_WRITE_RETRY_DELAY_MS = 1500;
 
 type ScoringPayload = { mode?: string; bias?: number; thresholds?: number[] };
 
+// A scoring config in one comparable form: the engine answers a missing value
+// as null, the form leaves it out.
+const sameScoring = (a: ScoringPayload | null, b: ScoringPayload | null) => {
+  const canonical = (c: ScoringPayload | null) =>
+    JSON.stringify([c?.mode ?? null, c?.bias ?? null, c?.thresholds ?? null]);
+  return a !== null && b !== null && canonical(a) === canonical(b);
+};
+
 const WEIGHT_OPTIONS = [
   { label: "Low", value: "1" },
   { label: "Medium", value: "2" },
@@ -1506,21 +1514,26 @@ export default function AdaptiveMFA() {
       if (signalsFailure) {
         throw new Error(`Saving risk signals failed (${signalsFailure}). Nothing was changed.`);
       }
-      const scoringFailure = await writeAmfa("updateScoringConfig", scoringPayload);
-      if (scoringFailure) {
-        throw new Error(
-          await undoSave(`Saving the scoring config failed (${scoringFailure})`, ["signals"]),
-        );
+      // Each write counts against the engine's config write limit, so an
+      // unchanged scoring config is not sent again.
+      const scoringChanged = !sameScoring(scoringPayload, savedScoring.current);
+      if (scoringChanged) {
+        const scoringFailure = await writeAmfa("updateScoringConfig", scoringPayload);
+        if (scoringFailure) {
+          throw new Error(
+            await undoSave(`Saving the scoring config failed (${scoringFailure})`, ["signals"]),
+          );
+        }
       }
       try {
         await adminClient.realms.update({ realm }, updatedAttributes);
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         throw new Error(
-          await undoSave(`Saving the realm settings failed (${reason})`, [
-            "scoring",
-            "signals",
-          ]),
+          await undoSave(
+            `Saving the realm settings failed (${reason})`,
+            scoringChanged ? ["scoring", "signals"] : ["signals"],
+          ),
         );
       }
       savedSignals.current = signalsPayload;
