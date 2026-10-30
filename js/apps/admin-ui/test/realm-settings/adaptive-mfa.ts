@@ -24,6 +24,11 @@ export const ENGINE_DOWN_BODY = JSON.stringify({
   error: "AMFA engine unreachable: adaptive_auth:80 failed to respond",
 });
 
+/** What the SPI answers when the engine refuses a write as invalid. */
+export const REFUSED_BODY = JSON.stringify({
+  error: 'AMFA engine returned HTTP 422: {"detail":"invalid"}',
+});
+
 /** What the SPI answers when the engine's config write limit refuses a write. */
 export const WRITE_LIMIT_BODY = JSON.stringify({
   error:
@@ -62,8 +67,12 @@ type Response = { status: number; body: string };
 /** One answer, or a sequence answered in order whose last entry repeats. */
 type Answers = Response | Response[];
 
-/** A write the page made, in the order it made them. */
-export type Write = { kind: "settings" | "scoring" | "realm"; payload: any };
+/** A write the page made, in the order it made them, and the realm it went to. */
+export type Write = {
+  kind: "settings" | "scoring" | "realm";
+  payload: any;
+  realm?: string;
+};
 
 export type Stubs = {
   realm: string;
@@ -81,6 +90,8 @@ export type Stubs = {
   settingsGetGate?: Promise<unknown>;
   /** When set, the scoring GET waits for this before answering. */
   scoringGetGate?: Promise<unknown>;
+  /** When set, every settings write waits for this before answering. */
+  settingsPutGate?: Promise<unknown>;
   /** Groups offered in the group-override selector. Defaults to none. */
   groups?: { id: string; name: string }[];
 };
@@ -111,6 +122,10 @@ export async function stubAmfa(page: Page, stubs: Stubs) {
   const scoringGet =
     stubs.scoringGet ?? { status: 200, body: JSON.stringify({ mode: "weight" }) };
   const scoringPut = answer(stubs.scoringPut);
+  const realmOf = (r: Route) =>
+    decodeURIComponent(
+      /\/realms\/([^/]+)\/amfa-api\//.exec(r.request().url())?.[1] ?? "",
+    );
   const parsed = (r: Route) => {
     try {
       return JSON.parse(r.request().postData() ?? "{}");
@@ -135,13 +150,18 @@ export async function stubAmfa(page: Page, stubs: Stubs) {
     await stubs.scoringGetGate;
     return r.fulfill(json(scoringGet));
   });
-  await page.route(SETTINGS_PUT, (r: Route) => {
+  await page.route(SETTINGS_PUT, async (r: Route) => {
     stubs.onSave?.(parsed(r));
-    stubs.onWrite?.({ kind: "settings", payload: parsed(r) });
+    stubs.onWrite?.({
+      kind: "settings",
+      payload: parsed(r),
+      realm: realmOf(r),
+    });
+    await stubs.settingsPutGate;
     return r.fulfill(json(settingsPut()));
   });
   await page.route(SCORING_PUT, (r: Route) => {
-    stubs.onWrite?.({ kind: "scoring", payload: parsed(r) });
+    stubs.onWrite?.({ kind: "scoring", payload: parsed(r), realm: realmOf(r) });
     return r.fulfill(json(scoringPut()));
   });
   // Only the realm's own PUT; its GETs and everything below it pass through.
@@ -149,15 +169,25 @@ export async function stubAmfa(page: Page, stubs: Stubs) {
     if (r.request().method() !== "PUT") {
       return r.fallback();
     }
-    stubs.onWrite?.({ kind: "realm", payload: parsed(r) });
+    stubs.onWrite?.({ kind: "realm", payload: parsed(r), realm: stubs.realm });
     return stubs.realmPut ? r.fulfill(json(stubs.realmPut)) : r.fallback();
   });
 }
 
-export async function goToAdaptiveMfa(page: Page, realm: string) {
+export async function goToAdaptiveMfa(
+  page: Page,
+  realm: string,
+  /**
+   * Runs before the page loads its configuration, after the rest of the
+   * console loaded. The Security defenses tabs all mount at once, so the
+   * page starts loading when that tab opens, not its own.
+   */
+  beforeOpen?: () => Promise<void>,
+) {
   await login(page);
   await goToRealm(page, realm);
   await goToRealmSettings(page);
+  await beforeOpen?.();
   await goToSecurityDefensesTab(page);
   await page.getByRole("tab", { name: "Adaptive MFA" }).click();
   // The whole form body, Save included, is gated behind this toggle, and a
