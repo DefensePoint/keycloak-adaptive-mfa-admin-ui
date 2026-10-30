@@ -24,6 +24,12 @@ export const ENGINE_DOWN_BODY = JSON.stringify({
   error: "AMFA engine unreachable: adaptive_auth:80 failed to respond",
 });
 
+/** What the SPI answers when the engine's config write limit refuses a write. */
+export const WRITE_LIMIT_BODY = JSON.stringify({
+  error:
+    'AMFA engine returned HTTP 429: {"success":false,"message":"Rate limit exceeded"}',
+});
+
 /** The engine's GET fills an effective threshold, so this is never absent. */
 export const EFFECTIVE_DAYS = 40;
 
