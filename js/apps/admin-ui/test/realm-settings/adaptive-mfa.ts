@@ -53,13 +53,22 @@ export function parameters(realm: string) {
 }
 
 type Response = { status: number; body: string };
+/** One answer, or a sequence answered in order whose last entry repeats. */
+type Answers = Response | Response[];
+
+/** A write the page made, in the order it made them. */
+export type Write = { kind: "settings" | "scoring" | "realm"; payload: any };
 
 export type Stubs = {
   realm: string;
   settingsGet?: Response;
-  settingsPut?: Response;
+  settingsPut?: Answers;
   scoringGet?: Response;
-  scoringPut?: Response;
+  scoringPut?: Answers;
+  /** When set, the Keycloak realm update (the AMFA attributes) answers this. */
+  realmPut?: Response;
+  /** Receives every write, AMFA and realm, in order. */
+  onWrite?: (write: Write) => void;
   /** Receives the parsed body of each save, for asserting what the UI sends. */
   onSave?: (payload: any) => void;
   /** When set, the settings GET waits for this before answering. */
@@ -86,10 +95,23 @@ export async function stubAmfa(page: Page, stubs: Stubs) {
       status: 200,
       body: JSON.stringify(parameters(stubs.realm)),
     };
-  const settingsPut = stubs.settingsPut ?? { status: 200, body: '"success"' };
+  const answer = (answers: Answers | undefined) => {
+    const list = Array.isArray(answers)
+      ? [...answers]
+      : [answers ?? { status: 200, body: '"success"' }];
+    return () => (list.length > 1 ? list.shift()! : list[0]);
+  };
+  const settingsPut = answer(stubs.settingsPut);
   const scoringGet =
     stubs.scoringGet ?? { status: 200, body: JSON.stringify({ mode: "weight" }) };
-  const scoringPut = stubs.scoringPut ?? { status: 200, body: '"success"' };
+  const scoringPut = answer(stubs.scoringPut);
+  const parsed = (r: Route) => {
+    try {
+      return JSON.parse(r.request().postData() ?? "{}");
+    } catch {
+      return null;
+    }
+  };
 
   // Lookup lists: always healthy, never under test here.
   await page.route(GROUPS, (r: Route) =>
@@ -108,16 +130,22 @@ export async function stubAmfa(page: Page, stubs: Stubs) {
     return r.fulfill(json(scoringGet));
   });
   await page.route(SETTINGS_PUT, (r: Route) => {
-    if (stubs.onSave) {
-      try {
-        stubs.onSave(JSON.parse(r.request().postData() ?? "{}"));
-      } catch {
-        stubs.onSave(null);
-      }
-    }
-    return r.fulfill(json(settingsPut));
+    stubs.onSave?.(parsed(r));
+    stubs.onWrite?.({ kind: "settings", payload: parsed(r) });
+    return r.fulfill(json(settingsPut()));
   });
-  await page.route(SCORING_PUT, (r: Route) => r.fulfill(json(scoringPut)));
+  await page.route(SCORING_PUT, (r: Route) => {
+    stubs.onWrite?.({ kind: "scoring", payload: parsed(r) });
+    return r.fulfill(json(scoringPut()));
+  });
+  // Only the realm's own PUT; its GETs and everything below it pass through.
+  await page.route(`**/admin/realms/${stubs.realm}`, (r: Route) => {
+    if (r.request().method() !== "PUT") {
+      return r.fallback();
+    }
+    stubs.onWrite?.({ kind: "realm", payload: parsed(r) });
+    return stubs.realmPut ? r.fulfill(json(stubs.realmPut)) : r.fallback();
+  });
 }
 
 export async function goToAdaptiveMfa(page: Page, realm: string) {
