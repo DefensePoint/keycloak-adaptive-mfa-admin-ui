@@ -246,8 +246,9 @@ export default function AdaptiveMFA() {
   // its built-in defaults rather than the realm's real settings, so saving would
   // overwrite live config with defaults. Saving is blocked until a reload works.
   const [configLoadFailed, setConfigLoadFailed] = useState(false);
-  // Set until both the settings and the scoring config have loaded. Until then
-  // the form holds its built-in defaults too, so saving is blocked the same way.
+  // Set until the settings, the scoring config and the realm attributes have
+  // loaded. Until then the form holds its built-in defaults too, so saving is
+  // blocked the same way.
   const [configLoading, setConfigLoading] = useState(true);
   // The risk signals and scoring config as the engine holds them: as loaded, then
   // as last saved. A save that fails part way writes these back, so the realm is
@@ -1144,12 +1145,17 @@ export default function AdaptiveMFA() {
   };
 
   useEffect(() => {
-    // Both loads catch their own errors, so this settles either way.
-    Promise.all([fetchData(), getScoringConfig()]).finally(() => {
+    // All three loads catch their own errors, so this settles either way. The
+    // realm attributes are one of them: a save writes them back from the form,
+    // so saving after they failed to load would put the defaults in their place.
+    void Promise.all([
+      fetchData(),
+      getScoringConfig(),
+      updateParameters(),
+    ]).finally(() => {
       savedSignals.current = buildSignalsPayload(getValues());
       setConfigLoading(false);
     });
-    updateParameters();
     getCountries();
     getGroups();
   }, []);
@@ -1157,6 +1163,10 @@ export default function AdaptiveMFA() {
   async function updateParameters() {
     try {
       const realmRep = await adminClient.realms.findOne({ realm });
+      // findOne answers a missing realm with nothing rather than an error.
+      if (!realmRep) {
+        throw new Error(`Realm "${realm}" could not be read`);
+      }
 
       setValue(
         "necessaryParameters.adaptiveToggle",
@@ -1181,7 +1191,8 @@ export default function AdaptiveMFA() {
 
     } catch (error) {
       console.error("Error retrieving realmRep:", error);
-      throw error;
+      setConfigLoadFailed(true);
+      addError("amfaLoadError", error);
     }
   }
 

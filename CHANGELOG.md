@@ -41,6 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with the invalid entries named under it, until the next save
 - The "Risk Classification" signal is now labelled "Event Cluster", and its
   help text says what it checks
+- Save also waits for the realm's AMFA settings (endpoint, fallback risk,
+  notifications), and stays blocked if they fail to load, so a save can no
+  longer write the form's defaults over them
 
 ### Removed
 
