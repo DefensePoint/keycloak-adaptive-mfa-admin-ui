@@ -462,6 +462,63 @@ test.describe.serial("Adaptive MFA error handling", () => {
     expect(writes).toEqual([]);
   });
 
+  test("signals the engine sends no row for get the engine's default weights", async ({
+    page,
+  }) => {
+    // The stub only answers the client and dormancy rows.
+    let saved: any = null;
+    await stubAmfa(page, {
+      realm: realmName,
+      onSave: (payload) => (saved = payload),
+    });
+    await goToAdaptiveMfa(page, realmName);
+
+    await saveButton(page).click();
+    await expect(alert(page)).toContainText("All the data are saved");
+
+    const weightOf = (name: string) =>
+      Number(
+        saved.parameters.find(
+          (p: any) =>
+            p.parameter_name === name &&
+            (p.group_id ?? "default") === "default",
+        ).weight,
+      );
+    expect(weightOf("impossible_travel")).toBe(3);
+    expect(weightOf("event_cluster_label")).toBe(2);
+    expect(weightOf("geolocation_cluster_label")).toBe(3);
+    expect(weightOf("date_time")).toBe(2);
+    expect(weightOf("device")).toBe(3);
+  });
+
+  test("an invalid IP stays marked on its field until it is fixed", async ({
+    page,
+  }) => {
+    const writes: Write[] = [];
+    await stubAmfa(page, { realm: realmName, onWrite: (w) => writes.push(w) });
+    await goToAdaptiveMfa(page, realmName);
+    await expandSignal(page, "ipAddress");
+    const allow = page.getByTestId("ipAddress.0.insertIPWhitelist0");
+    await allow.fill("10.0.0.999");
+
+    await saveButton(page).click();
+
+    await expect(alert(page)).toContainText(
+      "Invalid IPs on allow list: 10.0.0.999",
+    );
+    await expect(allow).toHaveAttribute("aria-invalid", "true");
+    await expect(
+      page.getByText("Not a valid IP address: 10.0.0.999"),
+    ).toBeVisible();
+    expect(writes).toEqual([]);
+
+    await allow.fill("10.0.0.9");
+    await saveButton(page).click();
+    await expect(alert(page)).toContainText("All the data are saved");
+    await expect(allow).not.toHaveAttribute("aria-invalid", "true");
+    await expect(page.getByText("Not a valid IP address")).toHaveCount(0);
+  });
+
   test("a failed settings load blocks saving over live config", async ({
     page,
   }) => {
@@ -490,6 +547,56 @@ test.describe.serial("Adaptive MFA error handling", () => {
     // even though the risk-signal list loaded fine.
     await expect(saveButton(page)).toBeDisabled();
     await expect(blockedNotice(page)).toBeVisible();
+  });
+
+  test("a failed realm settings load also blocks saving", async ({ page }) => {
+    // The save writes the endpoint, fallback risk and notify setting back from
+    // the form, so saving after they failed to load would put defaults there.
+    const writes: Write[] = [];
+    await stubAmfa(page, { realm: realmName, onWrite: (w) => writes.push(w) });
+    await goToAdaptiveMfa(page, realmName, () =>
+      page.route(`**/admin/realms/${realmName}`, (r) =>
+        r.request().method() === "GET"
+          ? r.fulfill({ status: 500, body: '{"error":"unknown_error"}' })
+          : r.fallback(),
+      ),
+    );
+
+    await expect(alert(page)).toContainText(
+      "Could not load the current Adaptive MFA configuration",
+    );
+    await expect(saveButton(page)).toBeDisabled();
+    await expect(blockedNotice(page)).toBeVisible();
+    await page.evaluate(() => {
+      const save = document.querySelector('[data-testid="amfa-save"]');
+      (save?.closest("form") as HTMLFormElement | null)?.requestSubmit();
+    });
+    await expect(alert(page)).toContainText("Saving is disabled");
+    expect(writes).toEqual([]);
+  });
+
+  test("saving waits for the realm settings to load too", async ({ page }) => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let scoringLoaded!: Promise<unknown>;
+    await stubAmfa(page, { realm: realmName });
+    await goToAdaptiveMfa(page, realmName, async () => {
+      scoringLoaded = page.waitForResponse("**/amfa-api/fetchScoringConfig");
+      await page.route(`**/admin/realms/${realmName}`, async (r) => {
+        if (r.request().method() === "GET") {
+          await gate;
+        }
+        return r.fallback();
+      });
+    });
+
+    // The engine loads have answered; the realm settings have not.
+    await scoringLoaded;
+    await expect(saveButton(page)).toBeDisabled();
+
+    release();
+    await expect(saveButton(page)).toBeEnabled();
+    await expect(blockedNotice(page)).toHaveCount(0);
   });
 
   test("submitting the form directly cannot bypass the load-failed guard", async ({
@@ -530,7 +637,7 @@ test.describe.serial("Adaptive MFA error handling", () => {
   test("saving stays blocked until the configuration has loaded", async ({
     page,
   }) => {
-    // Until both loads answer, the form holds its built-in defaults, so an early
+    // Until the loads answer, the form holds its built-in defaults, so an early
     // click would overwrite live config with them. A slow engine made this easy
     // to hit, and the button used to be enabled the whole time.
     let releaseSettings!: () => void;

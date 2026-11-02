@@ -10,9 +10,12 @@ import {
   CardTitle,
   Form,
   FormGroup,
+  FormHelperText,
   FormSection,
   FormSelect,
   FormSelectOption,
+  HelperText,
+  HelperTextItem,
   Switch,
   TextArea,
   TextInput,
@@ -243,8 +246,9 @@ export default function AdaptiveMFA() {
   // its built-in defaults rather than the realm's real settings, so saving would
   // overwrite live config with defaults. Saving is blocked until a reload works.
   const [configLoadFailed, setConfigLoadFailed] = useState(false);
-  // Set until both the settings and the scoring config have loaded. Until then
-  // the form holds its built-in defaults too, so saving is blocked the same way.
+  // Set until the settings, the scoring config and the realm attributes have
+  // loaded. Until then the form holds its built-in defaults too, so saving is
+  // blocked the same way.
   const [configLoading, setConfigLoading] = useState(true);
   // The risk signals and scoring config as the engine holds them: as loaded, then
   // as last saved. A save that fails part way writes these back, so the realm is
@@ -323,6 +327,24 @@ export default function AdaptiveMFA() {
             : key === "operationSystem"
               ? "insertOSBlacklist"
               : "insertVpnBlacklist";
+        // The IP list a save was refused for stays marked until the next save,
+        // since the alert that named the bad entries disappears.
+        const invalidIps = (list: "allow" | "deny") =>
+          key === "ipAddress" &&
+          ipError?.index === index &&
+          ipError.list === list
+            ? ipError.ips
+            : null;
+        const ipErrorText = (ips: string | null) =>
+          ips !== null && (
+            <FormHelperText>
+              <HelperText>
+                <HelperTextItem variant="error">
+                  {t("amfaInvalidIps", { ips })}
+                </HelperTextItem>
+              </HelperText>
+            </FormHelperText>
+          );
         return (
           <>
             <FormGroup label={t("amfaAllowList")} fieldId={`${key}-wl-${index}`}>
@@ -331,8 +353,10 @@ export default function AdaptiveMFA() {
                 name={`${key}.${index}.${wl}`}
                 aria-label={t("amfaAllowList")}
                 addButtonLabel="amfaAddValue"
+                validated={invalidIps("allow") !== null ? "error" : "default"}
                 stringify
               />
+              {ipErrorText(invalidIps("allow"))}
             </FormGroup>
             <FormGroup label={t("amfaDenyList")} fieldId={`${key}-bl-${index}`}>
               <MultiLineInput
@@ -340,8 +364,10 @@ export default function AdaptiveMFA() {
                 name={`${key}.${index}.${bl}`}
                 aria-label={t("amfaDenyList")}
                 addButtonLabel="amfaAddValue"
+                validated={invalidIps("deny") !== null ? "error" : "default"}
                 stringify
               />
+              {ipErrorText(invalidIps("deny"))}
             </FormGroup>
           </>
         );
@@ -561,7 +587,7 @@ export default function AdaptiveMFA() {
       case "ipAddress":
         return renderEditor("ipAddress", fields, append, remove, {
           isDisabled: "true",
-          weight: "1",
+          weight: "3",
           insertIPWhitelist: "",
           insertIPBlacklist: "",
           groupId: "",
@@ -572,12 +598,12 @@ export default function AdaptiveMFA() {
           operationSystemFields,
           appendOperationSystem,
           removeOperationSystem,
-          { isDisabled: "true", weight: "1", insertOSWhitelist: "", insertOSBlacklist: "", groupId: "" },
+          { isDisabled: "true", weight: "3", insertOSWhitelist: "", insertOSBlacklist: "", groupId: "" },
         );
       case "dateTime":
         return renderEditor("dateTime", dateTimeFields, appendDataTime, removeDataTime, {
           isDisabled: "true",
-          weight: "1",
+          weight: "2",
           startTimeWhitelist: "",
           endTimeWhitelist: "",
           startTimeBlacklist: "",
@@ -587,7 +613,7 @@ export default function AdaptiveMFA() {
       case "geoLoc":
         return renderEditor("geoLoc", geoLocFields, appendGeoLoc, removeGeoLoc, {
           isDisabled: "true",
-          weight: "1",
+          weight: "3",
           countriesWhitelist: [],
           countriesBlacklist: [],
           groupId: "",
@@ -595,7 +621,7 @@ export default function AdaptiveMFA() {
       case "vpnMask":
         return renderEditor("vpnMask", vpnMaskFields, appendVpnMask, removeVpnMask, {
           isDisabled: "true",
-          weight: "1",
+          weight: "3",
           insertVpnWhitelist: "",
           insertVpnBlacklist: "",
           groupId: "",
@@ -606,12 +632,15 @@ export default function AdaptiveMFA() {
           inActiveAccFields,
           appendInActiveAcc,
           removeInActiveAcc,
-          { isDisabled: "true", weight: "1", groupId: "" },
+          { isDisabled: "true", weight: "3", groupId: "" },
         );
       default:
         return null;
     }
   };
+  // The weights below, and those of new group overrides above, are the engine's
+  // own defaults (DEFAULT_DECISION_PARAMS), so a signal the engine sends no row
+  // for shows, and saves, what the engine would use anyway.
   const methods = useForm<AuthConfigSuper>({
       defaultValues: {
         necessaryParameters: {
@@ -622,36 +651,36 @@ export default function AdaptiveMFA() {
         },
         client: {
           isDisabled: "true",
-          weight: "1",
+          weight: "3",
         },
         ipAddress: [
           {
             isDisabled: "true",
-            weight: "1",
+            weight: "3",
             insertIPWhitelist: "",
             insertIPBlacklist: "",
           },
         ],
         device: {
           isDisabled: "true",
-          weight: "1",
+          weight: "3",
         },
         operationSystem: [
           {
             isDisabled: "true",
-            weight: "1",
+            weight: "3",
             insertOSWhitelist: "",
             insertOSBlacklist: "",
           },
         ],
         browserWindow: {
           isDisabled: "true",
-          weight: "1",
+          weight: "3",
         },
         dateTime: [
           {
             isDisabled: "true",
-            weight: "1",
+            weight: "2",
             startTimeWhitelist: "",
             endTimeWhitelist: "",
             startTimeBlacklist: "",
@@ -660,32 +689,32 @@ export default function AdaptiveMFA() {
         ],
         riskTypeClass: {
           isDisabled: "true",
-          weight: "1",
+          weight: "2",
         },
         timeInterval: {
           isDisabled: "true",
-          weight: "1",
+          weight: "2",
         },
         geoLoc: [
           {
             isDisabled: "true",
-            weight: "1",
+            weight: "3",
             countriesWhitelist: countryOptions,
             countriesBlacklist: countryOptions,
           },
         ],
         clientLanguage: {
           isDisabled: "true",
-          weight: "1",
+          weight: "3",
         },
         screenResolution: {
           isDisabled: "true",
-          weight: "1",
+          weight: "3",
         },
         vpnMask: [
           {
             isDisabled: "true",
-            weight: "1",
+            weight: "3",
             insertVpnWhitelist: "",
             insertVpnBlacklist: "",
           },
@@ -693,29 +722,29 @@ export default function AdaptiveMFA() {
         inActiveAcc: [
           {
             isDisabled: "true",
-            weight: "1",
+            weight: "3",
             inactiveDays: 0,
           },
         ],
         concurrentSession: {
           isDisabled: "true",
-          weight: "1",
+          weight: "3",
         },
         loginFailure: {
           isDisabled: "true",
-          weight: "1",
+          weight: "3",
         },
         recentAccountChange: {
           isDisabled: "true",
-          weight: "1",
+          weight: "3",
         },
         geoClusterLabel: {
           isDisabled: "true",
-          weight: "1",
+          weight: "3",
         },
         impossibleTravel: {
           isDisabled: "true",
-          weight: "1",
+          weight: "3",
         },
       },
     });
@@ -1116,12 +1145,17 @@ export default function AdaptiveMFA() {
   };
 
   useEffect(() => {
-    // Both loads catch their own errors, so this settles either way.
-    Promise.all([fetchData(), getScoringConfig()]).finally(() => {
+    // All three loads catch their own errors, so this settles either way. The
+    // realm attributes are one of them: a save writes them back from the form,
+    // so saving after they failed to load would put the defaults in their place.
+    void Promise.all([
+      fetchData(),
+      getScoringConfig(),
+      updateParameters(),
+    ]).finally(() => {
       savedSignals.current = buildSignalsPayload(getValues());
       setConfigLoading(false);
     });
-    updateParameters();
     getCountries();
     getGroups();
   }, []);
@@ -1129,6 +1163,10 @@ export default function AdaptiveMFA() {
   async function updateParameters() {
     try {
       const realmRep = await adminClient.realms.findOne({ realm });
+      // findOne answers a missing realm with nothing rather than an error.
+      if (!realmRep) {
+        throw new Error(`Realm "${realm}" could not be read`);
+      }
 
       setValue(
         "necessaryParameters.adaptiveToggle",
@@ -1153,19 +1191,22 @@ export default function AdaptiveMFA() {
 
     } catch (error) {
       console.error("Error retrieving realmRep:", error);
-      throw error;
+      setConfigLoadFailed(true);
+      addError("amfaLoadError", error);
     }
   }
 
-  /* IP Addresses error state variables */
-  const [ipWhitelistErrorIndex, setIpWhitelistErrorIndex] = useState<number | null>(null);
-  const [ipBlacklistErrorIndex, setIpBlacklistErrorIndex] = useState<number | null>(null);
+  /* The IP list the last save was refused for, and its invalid entries */
+  const [ipError, setIpError] = useState<{
+    index: number;
+    list: "allow" | "deny";
+    ips: string;
+  } | null>(null);
 
   /* Function to validate if the whitelists/blacklists of IP adrresses are valid */
   const validateIpsBlacklistWhitelist = (ipAddress: any, index: number): boolean => {
-    // Cleaning the error states
-    setIpWhitelistErrorIndex(null);
-    setIpBlacklistErrorIndex(null);
+    // Cleaning the error state
+    setIpError(null);
 
     // Validate if a string is a valid ipv4 or ipv6
     function isValidIP(ip: string): boolean {
@@ -1194,13 +1235,16 @@ export default function AdaptiveMFA() {
     // (namespace/key separators in i18next) mis-parses into a blank toast - so
     // the save was blocked with no visible error. addAlert renders the message
     // verbatim as a danger toast.
+    // An empty row is named, so the message never ends in a blank.
+    const named = (ips: string[]) =>
+      ips.map((ip) => (ip === "" ? t("amfaEmptyEntry") : ip)).join(", ");
     if (invalidWhitelist.length > 0) {
-      addAlert(`Invalid IPs on allow list: ${invalidWhitelist.join(", ")}`, AlertVariant.danger);
-      setIpWhitelistErrorIndex(index);
+      addAlert(`Invalid IPs on allow list: ${named(invalidWhitelist)}`, AlertVariant.danger);
+      setIpError({ index, list: "allow", ips: named(invalidWhitelist) });
       return false;
     } else if (invalidBlacklist.length > 0) {
-      addAlert(`Invalid IPs on deny list: ${invalidBlacklist.join(", ")}`, AlertVariant.danger);
-      setIpBlacklistErrorIndex(index)
+      addAlert(`Invalid IPs on deny list: ${named(invalidBlacklist)}`, AlertVariant.danger);
+      setIpError({ index, list: "deny", ips: named(invalidBlacklist) });
       return false;
     }
   

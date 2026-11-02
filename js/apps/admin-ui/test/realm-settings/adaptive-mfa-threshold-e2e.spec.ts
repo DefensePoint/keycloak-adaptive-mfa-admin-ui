@@ -40,6 +40,7 @@ const REALM_THRESHOLD = "90";
 
 test.describe.serial("Adaptive MFA dormancy threshold (full stack)", () => {
   const realmName = `amfa-threshold-e2e-${uuid()}`;
+  let groupId = "";
 
   test.beforeAll(async () => {
     await adminClient.createRealm(realmName, {
@@ -74,6 +75,9 @@ test.describe.serial("Adaptive MFA dormancy threshold (full stack)", () => {
         },
       ],
     });
+
+    // A group to give the dormancy signal an override for.
+    groupId = (await adminClient.createGroup("Sales", realmName)).id;
   });
 
   test.afterAll(() => adminClient.deleteRealm(realmName));
@@ -153,7 +157,19 @@ test.describe.serial("Adaptive MFA dormancy threshold (full stack)", () => {
     expect(String(defaultRow.inactive_days)).toBe(REALM_THRESHOLD);
   });
 
-  test("a group override carries no threshold of its own", async () => {
+  test("a group override carries no threshold of its own", async ({ page }) => {
+    // Give the dormancy signal a real group override through the page, so the
+    // check below has an override row to look at.
+    await goToAdaptiveMfa(page);
+    await expandSignal(page, "inActiveAcc");
+    await expect(saveButton(page)).toBeEnabled();
+    await page.getByRole("button", { name: "Add group override" }).click();
+    await page.locator('[id="inActiveAcc.1.groupId"]').selectOption(groupId);
+    await saveButton(page).click();
+    await expect(page.getByTestId("last-alert")).toContainText(
+      "All the data are saved",
+    );
+
     // The realm-level invariant, checked in the persisted data rather than the
     // rendered form: only the default row may carry inactive_days.
     const response = await fetch(
@@ -167,6 +183,7 @@ test.describe.serial("Adaptive MFA dormancy threshold (full stack)", () => {
         r.parameter_name === "inactive_account" &&
         (r.group_id ?? "default") !== "default",
     );
+    expect(overrides.map((r) => r.group_id)).toEqual([groupId]);
     for (const row of overrides) {
       expect(row.inactive_days ?? null).toBeNull();
     }
