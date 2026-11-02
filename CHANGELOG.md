@@ -45,6 +45,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notifications), and stays blocked if they fail to load, so a save can no
   longer write the form's defaults over them
 
+- AMFA can be switched off again: Save stays visible when the switch is
+  off, and saving then only writes the realm's switch, so it also works while
+  the engine is down. It is still blocked when the realm itself could not be
+  read, as the switch then does not show the realm's real state. A realm that
+  never saved this page now shows the switch on, as its logins are
+  risk-checked. With the plugin's matching change, logins in a realm that has
+  AMFA off continue as low risk and nothing is sent to the engine
+
 ### Removed
 
 - Unused strings for per-signal weight labels and for an event history viewer
