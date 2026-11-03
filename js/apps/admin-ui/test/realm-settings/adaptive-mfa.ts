@@ -1,4 +1,5 @@
 import { expect, type Page, type Route } from "@playwright/test";
+import adminClient from "../utils/AdminClient.ts";
 import { switchOn } from "../utils/form.ts";
 import { login } from "../utils/login.ts";
 import { goToRealm, goToRealmSettings } from "../utils/sidebar.ts";
@@ -184,17 +185,27 @@ export async function goToAdaptiveMfa(
    */
   beforeOpen?: () => Promise<void>,
 ) {
+  // The page reads the switch from the realm when the tab opens, and a click
+  // before that answers would be undone by it. A realm saved as off is
+  // switched on here first, so whenever the click lands, the switch ends up on.
+  const stored = await adminClient.getRealm(realm);
+  if (stored?.attributes?.adaptiveToggle === "false") {
+    await adminClient.updateRealm(realm, {
+      ...stored,
+      attributes: { ...stored.attributes, adaptiveToggle: "true" },
+    });
+  }
   await login(page);
   await goToRealm(page, realm);
   await goToRealmSettings(page);
   await beforeOpen?.();
   await goToSecurityDefensesTab(page);
   await page.getByRole("tab", { name: "Adaptive MFA" }).click();
-  // The whole form body, Save included, is gated behind this toggle, and a
-  // fresh realm renders it off. Must be idempotent: a successful save persists
-  // adaptiveToggle=true through the Keycloak admin API, which is deliberately
-  // not stubbed, so blindly force-clicking would switch it back off.
   const toggle = page.locator("#adaptiveToggle");
+  // The whole form body, Save included, is gated behind this toggle. Must be
+  // idempotent: a successful save persists adaptiveToggle=true through the
+  // Keycloak admin API, which is deliberately not stubbed, so blindly
+  // force-clicking would switch it back off.
   if (!(await toggle.isChecked())) {
     await switchOn(page, toggle);
   }

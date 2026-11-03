@@ -1,7 +1,9 @@
 import { expect, test } from "@playwright/test";
 import { v4 as uuid } from "uuid";
 import adminClient from "../utils/AdminClient.ts";
-import { goToRealm } from "../utils/sidebar.ts";
+import { switchOff, switchOn } from "../utils/form.ts";
+import { login } from "../utils/login.ts";
+import { goToRealm, goToRealmSettings } from "../utils/sidebar.ts";
 import {
   alert,
   blockedNotice,
@@ -17,6 +19,7 @@ import {
   stubAmfa,
   type Write,
 } from "./adaptive-mfa.ts";
+import { goToSecurityDefensesTab } from "./security-defenses.ts";
 
 /**
  * Error handling for the Adaptive MFA settings page.
@@ -716,5 +719,179 @@ test.describe.serial("Adaptive MFA error handling", () => {
       "settings",
       "realm",
     ]);
+  });
+
+  test("switching AMFA off saves only the switch", async ({ page }) => {
+    const writes: Write[] = [];
+    await stubAmfa(page, { realm: realmName, onWrite: (w) => writes.push(w) });
+    await goToAdaptiveMfa(page, realmName);
+    await saveButton(page).click();
+    await expect(alert(page)).toContainText("All the data are saved");
+    await alert(page).locator("button").first().click();
+    const before = (await adminClient.getRealm(realmName))?.attributes;
+    writes.length = 0;
+
+    // The defect: Save lived inside the switched-on part of the form, so
+    // turning the switch off removed the only way to store it.
+    await switchOff(page, page.locator("#adaptiveToggle"));
+    await expect(saveButton(page)).toBeEnabled();
+    await saveButton(page).click();
+
+    await expect(alert(page)).toContainText(
+      "Adaptive MFA is off for this realm",
+    );
+    // Nothing is sent to the engine: no config write, no write limit used.
+    expect(writes.map((w) => w.kind)).toEqual(["realm"]);
+    const after = (await adminClient.getRealm(realmName))?.attributes;
+    expect(after?.adaptiveToggle).toBe("false");
+    // Every other attribute, AMFA or not, is kept as it was.
+    expect({ ...after, adaptiveToggle: undefined }).toEqual({
+      ...before,
+      adaptiveToggle: undefined,
+    });
+  });
+
+  test("switching off works while the configuration cannot load", async ({
+    page,
+  }) => {
+    const writes: Write[] = [];
+    await stubAmfa(page, {
+      realm: realmName,
+      settingsGet: { status: 502, body: ENGINE_DOWN_BODY },
+      onWrite: (w) => writes.push(w),
+    });
+    await goToAdaptiveMfa(page, realmName);
+    await expect(saveButton(page)).toBeDisabled();
+    await expect(blockedNotice(page)).toBeVisible();
+
+    // An engine that is down is the likeliest reason to switch AMFA off.
+    await switchOff(page, page.locator("#adaptiveToggle"));
+    await expect(blockedNotice(page)).toHaveCount(0);
+    await expect(saveButton(page)).toBeEnabled();
+
+    // Switching back on blocks again: those settings were never loaded.
+    await switchOn(page, page.locator("#adaptiveToggle"));
+    await expect(saveButton(page)).toBeDisabled();
+    await expect(blockedNotice(page)).toBeVisible();
+
+    await switchOff(page, page.locator("#adaptiveToggle"));
+    await saveButton(page).click();
+    await expect(alert(page)).toContainText(
+      "Adaptive MFA is off for this realm",
+    );
+    expect(writes.map((w) => w.kind)).toEqual(["realm"]);
+    expect(
+      (await adminClient.getRealm(realmName))?.attributes?.adaptiveToggle,
+    ).toBe("false");
+  });
+
+  test("switching back on saves the whole configuration again", async ({
+    page,
+  }) => {
+    const writes: Write[] = [];
+    await stubAmfa(page, { realm: realmName, onWrite: (w) => writes.push(w) });
+    // The realm is off from the previous test; this switches it on on the page,
+    // so it opens the page itself (goToAdaptiveMfa would switch it on first).
+    expect(
+      (await adminClient.getRealm(realmName))?.attributes?.adaptiveToggle,
+    ).toBe("false");
+    await login(page);
+    await goToRealm(page, realmName);
+    await goToRealmSettings(page);
+    await goToSecurityDefensesTab(page);
+    await page.getByRole("tab", { name: "Adaptive MFA" }).click();
+    const toggle = page.locator("#adaptiveToggle");
+    // Save turns active once the page has read the realm, so the switch then
+    // shows the stored "off" and a click is not undone by that read.
+    await expect(saveButton(page)).toBeEnabled();
+    await expect(toggle).not.toBeChecked();
+    await switchOn(page, toggle);
+    await saveButton(page).click();
+    await expect(alert(page)).toContainText("All the data are saved");
+    expect(writes.map((w) => w.kind)).toEqual(["settings", "realm"]);
+    expect(
+      (await adminClient.getRealm(realmName))?.attributes?.adaptiveToggle,
+    ).toBe("true");
+  });
+
+  test("a failed switch-off save reports the failure", async ({ page }) => {
+    await stubAmfa(page, {
+      realm: realmName,
+      realmPut: { status: 500, body: '{"error":"unknown_error"}' },
+    });
+    await goToAdaptiveMfa(page, realmName);
+
+    await switchOff(page, page.locator("#adaptiveToggle"));
+    await saveButton(page).click();
+
+    await expect(alert(page)).toContainText("An error occurred");
+    await expect(alert(page)).not.toContainText("Adaptive MFA is off");
+    expect(
+      (await adminClient.getRealm(realmName))?.attributes?.adaptiveToggle,
+    ).toBe("true");
+    // The page is not stuck: the same save can be tried again.
+    await expect(saveButton(page)).toBeEnabled();
+  });
+
+  test("a realm that cannot be read blocks even switching off", async ({
+    page,
+  }) => {
+    const writes: Write[] = [];
+    await stubAmfa(page, { realm: realmName, onWrite: (w) => writes.push(w) });
+    await login(page);
+    await goToRealm(page, realmName);
+    await goToRealmSettings(page);
+    await page.route(`**/admin/realms/${realmName}`, (r) =>
+      r.request().method() === "GET"
+        ? r.fulfill({ status: 503, body: '{"error":"unavailable"}' })
+        : r.fallback(),
+    );
+    await goToSecurityDefensesTab(page);
+    await page.getByRole("tab", { name: "Adaptive MFA" }).click();
+
+    // The defect: the switch shows its default, off, so Save would write
+    // "off" to a realm that has AMFA on.
+    await expect(alert(page)).toContainText(
+      "Could not load the current Adaptive MFA configuration",
+    );
+    await expect(page.locator("#adaptiveToggle")).not.toBeChecked();
+    await expect(saveButton(page)).toBeDisabled();
+    await expect(blockedNotice(page)).toBeVisible();
+
+    // Not even a submit that gets past the disabled button writes anything.
+    await page.evaluate(() =>
+      (
+        document
+          .querySelector('[data-testid="amfa-save"]')
+          ?.closest("form") as HTMLFormElement | null
+      )?.requestSubmit(),
+    );
+    // The guard answers with the same reason the notice gives.
+    await expect(alert(page)).toContainText("Saving is disabled");
+    expect(writes).toEqual([]);
+    expect(
+      (await adminClient.getRealm(realmName))?.attributes?.adaptiveToggle,
+    ).toBe("true");
+  });
+
+  test("a realm that never saved this page shows AMFA on", async ({ page }) => {
+    // Its logins are risk-checked: only an explicit "false" switches AMFA off.
+    const fresh = `adaptive-mfa-fresh-${uuid()}`;
+    await adminClient.createRealm(fresh);
+    try {
+      expect(
+        (await adminClient.getRealm(fresh))?.attributes?.adaptiveToggle,
+      ).toBeUndefined();
+      await stubAmfa(page, { realm: fresh });
+      await login(page);
+      await goToRealm(page, fresh);
+      await goToRealmSettings(page);
+      await goToSecurityDefensesTab(page);
+      await page.getByRole("tab", { name: "Adaptive MFA" }).click();
+      await expect(page.locator("#adaptiveToggle")).toBeChecked();
+      await expect(saveButton(page)).toBeEnabled();
+    } finally {
+      await adminClient.deleteRealm(fresh);
+    }
   });
 });

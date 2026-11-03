@@ -246,6 +246,10 @@ export default function AdaptiveMFA() {
   // its built-in defaults rather than the realm's real settings, so saving would
   // overwrite live config with defaults. Saving is blocked until a reload works.
   const [configLoadFailed, setConfigLoadFailed] = useState(false);
+  // Set when the realm itself could not be read. The switch then shows its
+  // default rather than the realm's real state, so not even switching off is
+  // allowed: it could switch off a realm that has AMFA on.
+  const [realmLoadFailed, setRealmLoadFailed] = useState(false);
   // Set until the settings, the scoring config and the realm attributes have
   // loaded. Until then the form holds its built-in defaults too, so saving is
   // blocked the same way.
@@ -1168,11 +1172,14 @@ export default function AdaptiveMFA() {
         throw new Error(`Realm "${realm}" could not be read`);
       }
 
+      // Only an explicit "false" is off, as for the login: a realm that never
+      // saved this page has no switch, and its logins are risk-checked.
+      const toggle = realmRep?.attributes?.adaptiveToggle;
       setValue(
         "necessaryParameters.adaptiveToggle",
-        realmRep?.attributes?.adaptiveToggle === "true" ||
-        realmRep?.attributes?.adaptiveToggle === true ||
-        false
+        String(toggle ?? "")
+          .trim()
+          .toLowerCase() !== "false",
       );
       setValue(
         "necessaryParameters.adaptiveAuthEndpoint",
@@ -1192,6 +1199,7 @@ export default function AdaptiveMFA() {
     } catch (error) {
       console.error("Error retrieving realmRep:", error);
       setConfigLoadFailed(true);
+      setRealmLoadFailed(true);
       addError("amfaLoadError", error);
     }
   }
@@ -1567,6 +1575,11 @@ export default function AdaptiveMFA() {
     );
   };
 
+  // Saving is blocked while the form may hold defaults instead of real values:
+  // the whole form when switched on, and even the switch when the realm itself
+  // could not be read.
+  const saveBlocked = configLoadFailed && (enable || realmLoadFailed);
+
   const onSubmit = async (data: AuthConfigSuper) => {
     // Defence in depth behind the disabled Save button, which is what actually
     // prevents this today: browsers suppress implicit form submission while the
@@ -1578,7 +1591,10 @@ export default function AdaptiveMFA() {
     if (configLoading) {
       return;
     }
-    if (configLoadFailed) {
+    // Switching off only writes the switch, so a failed load of the settings
+    // does not block it. A failed load of the realm does.
+    const switchingOff = !data.necessaryParameters.adaptiveToggle;
+    if (saveBlocked) {
       addError("amfaLoadError", new Error(t("amfaSaveBlockedLoadFailed")));
       return;
     }
@@ -1589,6 +1605,25 @@ export default function AdaptiveMFA() {
     setSaving(true);
     const saveRealm = realm;
     try {
+      if (switchingOff) {
+        // Only the realm's switch is written, on a fresh read of the realm: the
+        // hidden settings are neither checked nor sent, the engine's config
+        // write limit is not used, and it works while the engine is down.
+        const current = await adminClient.realms.findOne({ realm: saveRealm });
+        if (!current) {
+          throw new Error(`Realm "${saveRealm}" could not be read`);
+        }
+        await adminClient.realms.update(
+          { realm: saveRealm },
+          {
+            ...current,
+            attributes: { ...current.attributes, adaptiveToggle: false },
+          },
+        );
+        addAlert(t("amfaSwitchedOff"), AlertVariant.success);
+        return;
+      }
+
       // Validating the whitelists/blacklist ip inputs
       for (let index = 0; index < data.ipAddress.length; index++) {
         const ipAddress = data.ipAddress[index];
@@ -1907,33 +1942,34 @@ export default function AdaptiveMFA() {
             )}
           </FormSection>
 
-          <ActionGroup>
-            <Button
-              type="submit"
-              variant="primary"
-              isDisabled={configLoading || configLoadFailed || saving}
-              isLoading={saving}
-              data-testid="amfa-save"
-            >
-              {t("save")}
-            </Button>
-            {/* A disabled button with no explanation is its own confusion, and the
-                error alert has long since auto-dismissed by the time anyone looks. */}
-            {configLoadFailed && (
-              <div
-                data-testid="amfa-save-blocked"
-                style={{
-                  fontSize: "13px",
-                  color: "var(--pf-v5-global--danger-color--100)",
-                  alignSelf: "center",
-                }}
-              >
-                {t("amfaSaveBlockedLoadFailed")}
-              </div>
-            )}
-          </ActionGroup>
         </>
       )}
+
+      <ActionGroup>
+        <Button
+          type="submit"
+          variant="primary"
+          isDisabled={configLoading || saveBlocked || saving}
+          isLoading={saving}
+          data-testid="amfa-save"
+        >
+          {t("save")}
+        </Button>
+        {/* A disabled button with no explanation is its own confusion, and the
+            error alert has long since auto-dismissed by the time anyone looks. */}
+        {saveBlocked && (
+          <div
+            data-testid="amfa-save-blocked"
+            style={{
+              fontSize: "13px",
+              color: "var(--pf-v5-global--danger-color--100)",
+              alignSelf: "center",
+            }}
+          >
+            {t("amfaSaveBlockedLoadFailed")}
+          </div>
+        )}
+      </ActionGroup>
     </Form>
     </FormProvider>
   );
