@@ -14,6 +14,7 @@ import {
   WRITE_LIMIT_BODY,
   expandSignal,
   goToAdaptiveMfa,
+  parameters,
   savedDormancyRow,
   saveButton,
   stubAmfa,
@@ -520,6 +521,99 @@ test.describe.serial("Adaptive MFA error handling", () => {
     await expect(alert(page)).toContainText("All the data are saved");
     await expect(allow).not.toHaveAttribute("aria-invalid", "true");
     await expect(page.getByText("Not a valid IP address")).toHaveCount(0);
+  });
+
+  test("empty OS and VPN rows are not saved", async ({ page }) => {
+    let saved: any = null;
+    await stubAmfa(page, {
+      realm: realmName,
+      onSave: (payload) => (saved = payload),
+    });
+    await goToAdaptiveMfa(page, realmName);
+
+    // "Add value" leaves an empty row behind; a row of spaces is empty too.
+    await expandSignal(page, "operationSystem");
+    await page
+      .getByTestId("operationSystem.0.insertOSWhitelist0")
+      .fill("Windows|10");
+    await page
+      .getByTestId("operationSystem.0.insertOSWhitelist-addValue")
+      .click();
+    await page.getByTestId("operationSystem.0.insertOSBlacklist0").fill("   ");
+    await expandSignal(page, "vpnMask");
+    await page.getByTestId("vpnMask.0.insertVpnWhitelist0").fill("trusted");
+    await page.getByTestId("vpnMask.0.insertVpnWhitelist-addValue").click();
+
+    await saveButton(page).click();
+    await expect(alert(page)).toContainText("All the data are saved");
+
+    const { osArray, vpnMaskArray } = saved.extraParameter;
+    expect(osArray[0].whitelist).toEqual(["Windows|10"]);
+    expect(osArray[0].blacklist).toEqual([]);
+    expect(vpnMaskArray[0].whitelist).toEqual(["trusted"]);
+    expect(vpnMaskArray[0].blacklist).toEqual([]);
+  });
+
+  test("an empty OS or VPN entry already stored is not shown as a row", async ({
+    page,
+  }) => {
+    const row = (name: string, whitelist: string[], blacklist: string[]) => ({
+      realm_id: realmName,
+      group_id: "default",
+      parameter_name: name,
+      weight: 2,
+      disabled: false,
+      whitelist,
+      blacklist,
+    });
+    let saved: any = null;
+    await stubAmfa(page, {
+      realm: realmName,
+      settingsGet: {
+        status: 200,
+        body: JSON.stringify([
+          ...parameters(realmName),
+          row("operating_system", ["Windows|10", ""], [""]),
+          row("anonymous_detection", ["", "trusted"], []),
+        ]),
+      },
+      onSave: (payload) => (saved = payload),
+    });
+    await goToAdaptiveMfa(page, realmName);
+
+    await expandSignal(page, "operationSystem");
+    await expect(
+      page.getByTestId("operationSystem.0.insertOSWhitelist0"),
+    ).toHaveValue("Windows|10");
+    await expect(
+      page.getByTestId("operationSystem.0.insertOSWhitelist1"),
+    ).toHaveCount(0);
+    await expect(
+      page.getByTestId("operationSystem.0.insertOSBlacklist0"),
+    ).toHaveValue("");
+    await expect(
+      page.getByTestId("operationSystem.0.insertOSBlacklist1"),
+    ).toHaveCount(0);
+    await expandSignal(page, "vpnMask");
+    await expect(page.getByTestId("vpnMask.0.insertVpnWhitelist0")).toHaveValue(
+      "trusted",
+    );
+    await expect(page.getByTestId("vpnMask.0.insertVpnWhitelist1")).toHaveCount(
+      0,
+    );
+
+    // Saving unchanged writes the lists back without the empty entries.
+    await saveButton(page).click();
+    await expect(alert(page)).toContainText("All the data are saved");
+    const { osArray, vpnMaskArray } = saved.extraParameter;
+    expect(osArray[0]).toMatchObject({
+      whitelist: ["Windows|10"],
+      blacklist: [],
+    });
+    expect(vpnMaskArray[0]).toMatchObject({
+      whitelist: ["trusted"],
+      blacklist: [],
+    });
   });
 
   test("a failed settings load blocks saving over live config", async ({

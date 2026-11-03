@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An empty or blank row in the operating system or VPN / Proxy allow and
+  deny lists (left by "Add value" or by clearing a row) is no longer saved as
+  an empty entry, and an empty entry saved before no longer comes back as an
+  empty row
 - Save stays disabled until the current configuration has loaded, so an early
   click can no longer overwrite the realm's settings with the form's defaults
 - A group override without a group, or the same group picked twice in one
