@@ -187,7 +187,7 @@ export async function goToAdaptiveMfa(
 ) {
   // The page reads the switch from the realm when the tab opens, and a click
   // before that answers would be undone by it. A realm saved as off is
-  // switched on here first, so whenever the click lands, the switch ends up on.
+  // switched on here first, so the realm's answer always turns the switch on.
   const stored = await adminClient.getRealm(realm);
   if (stored?.attributes?.adaptiveToggle === "false") {
     await adminClient.updateRealm(realm, {
@@ -205,10 +205,16 @@ export async function goToAdaptiveMfa(
   // The whole form body, Save included, is gated behind this toggle. Must be
   // idempotent: a successful save persists adaptiveToggle=true through the
   // Keycloak admin API, which is deliberately not stubbed, so blindly
-  // force-clicking would switch it back off.
-  if (!(await toggle.isChecked())) {
-    await switchOn(page, toggle);
-  }
+  // force-clicking would switch it back off. The form starts off until the
+  // realm answers, and a click toggles: one decided before that answer and
+  // landing after it switches AMFA off again, so the state is checked anew
+  // before every click.
+  await expect(async () => {
+    if (!(await toggle.isChecked())) {
+      await switchOn(page, toggle);
+    }
+    await expect(toggle).toBeChecked({ timeout: 1000 });
+  }).toPass();
   await expect(toggle).toBeChecked();
 }
 
