@@ -73,6 +73,20 @@ const sameScoring = (a: ScoringPayload | null, b: ScoringPayload | null) => {
   return a !== null && b !== null && canonical(a) === canonical(b);
 };
 
+// The OS and VPN lists are free text, and an empty or blank row (left by
+// "Add value" or by clearing a row) means nothing: it is neither sent to the
+// engine, which stores the lists as given, nor shown again on load.
+const toListEntries = (value?: string): string[] =>
+  value
+    ? value
+        .split("##")
+        .map((entry) => entry.trim())
+        .filter((entry) => entry !== "")
+    : [];
+
+const fromListEntries = (list?: string[] | null): string =>
+  (list ?? []).filter((entry) => entry.trim() !== "").join("##");
+
 const WEIGHT_OPTIONS = [
   { label: "Low", value: "1" },
   { label: "Medium", value: "2" },
@@ -996,12 +1010,8 @@ export default function AdaptiveMFA() {
                     item = {
                       isDisabled: param.disabled.toString(),
                       weight: param.weight.toString(),
-                      insertOSWhitelist: param.whitelist && param.whitelist.length > 0
-                        ? param.whitelist.join("##")
-                        : "",
-                      insertOSBlacklist: param.blacklist && param.blacklist.length > 0
-                        ? param.blacklist.join("##")
-                        : "",
+                      insertOSWhitelist: fromListEntries(param.whitelist),
+                      insertOSBlacklist: fromListEntries(param.blacklist),
                       groupId: groupId,
                     };
                     break;
@@ -1035,12 +1045,8 @@ export default function AdaptiveMFA() {
                     item = {
                       isDisabled: param.disabled.toString(),
                       weight: param.weight.toString(),
-                      insertVpnWhitelist: param.whitelist && param.whitelist.length > 0
-                        ? param.whitelist.join("##")
-                        : "",
-                      insertVpnBlacklist: param.blacklist && param.blacklist.length > 0
-                        ? param.blacklist.join("##")
-                        : "",
+                      insertVpnWhitelist: fromListEntries(param.whitelist),
+                      insertVpnBlacklist: fromListEntries(param.blacklist),
                       groupId: groupId,
                     };
                     break;
@@ -1372,16 +1378,8 @@ export default function AdaptiveMFA() {
       }),
       extraParameter: {
         osArray: data.operationSystem.map((os: any) => ({
-          whitelist: os.insertOSWhitelist
-            ? os.insertOSWhitelist
-                .split("##")
-                .map((osItem: string) => osItem.trim())
-            : [],
-          blacklist: os.insertOSBlacklist
-            ? os.insertOSBlacklist
-                .split("##")
-                .map((osItem: string) => osItem.trim())
-            : [],
+          whitelist: toListEntries(os.insertOSWhitelist),
+          blacklist: toListEntries(os.insertOSBlacklist),
           group_id: os.groupId,
         })),
         ipAddressArray: data.ipAddress.map((ipAddress: any) => ({
@@ -1414,16 +1412,8 @@ export default function AdaptiveMFA() {
           group_id: dateTime.groupId,
         })),
         vpnMaskArray: data.vpnMask.map((vpnMask: any) => ({
-          whitelist: vpnMask.insertVpnWhitelist
-            ? vpnMask.insertVpnWhitelist
-                .split("##")
-                .map((mask: string) => mask.trim())
-            : [],
-          blacklist: vpnMask.insertVpnBlacklist
-            ? vpnMask.insertVpnBlacklist
-                .split("##")
-                .map((mask: string) => mask.trim())
-            : [],
+          whitelist: toListEntries(vpnMask.insertVpnWhitelist),
+          blacklist: toListEntries(vpnMask.insertVpnBlacklist),
           group_id: vpnMask.groupId,
         })),
         countryNameArray: data.geoLoc.map((geoLoc: any) => ({
