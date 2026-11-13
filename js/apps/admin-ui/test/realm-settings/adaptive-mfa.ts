@@ -80,7 +80,7 @@ export type Write = {
 
 export type Stubs = {
   realm: string;
-  settingsGet?: Response;
+  settingsGet?: Answers;
   settingsPut?: Answers;
   scoringGet?: Response;
   scoringPut?: Answers;
@@ -111,17 +111,18 @@ export async function stubAmfa(page: Page, stubs: Stubs) {
     body: r.body,
   });
 
-  const settingsGet =
-    stubs.settingsGet ?? {
-      status: 200,
-      body: JSON.stringify(parameters(stubs.realm)),
-    };
   const answer = (answers: Answers | undefined) => {
     const list = Array.isArray(answers)
       ? [...answers]
       : [answers ?? { status: 200, body: '"success"' }];
     return () => (list.length > 1 ? list.shift()! : list[0]);
   };
+  const settingsGet = answer(
+    stubs.settingsGet ?? {
+      status: 200,
+      body: JSON.stringify(parameters(stubs.realm)),
+    },
+  );
   const settingsPut = answer(stubs.settingsPut);
   const scoringGet =
     stubs.scoringGet ?? { status: 200, body: JSON.stringify({ mode: "weight" }) };
@@ -148,7 +149,7 @@ export async function stubAmfa(page: Page, stubs: Stubs) {
 
   await page.route(SETTINGS_GET, async (r: Route) => {
     await stubs.settingsGetGate;
-    return r.fulfill(json(settingsGet));
+    return r.fulfill(json(settingsGet()));
   });
   await page.route(SCORING_GET, async (r: Route) => {
     await stubs.scoringGetGate;

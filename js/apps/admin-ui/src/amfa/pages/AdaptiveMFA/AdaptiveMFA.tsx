@@ -51,6 +51,18 @@ type ScoringPayload = { mode?: string; bias?: number; thresholds?: number[] };
 // so the engine's config write limit is recognised from that text. A refusal is
 // not counted against the limit, and the window slides, so the one retry is
 // still worth making.
+/* The engine endpoint must be an absolute http(s) URL, as the login calls it. */
+const isHttpUrl = (value: string) => {
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") && !!url.host
+    );
+  } catch {
+    return false;
+  }
+};
+
 const isWriteLimited = (failure: string | null) =>
   !!failure && /(returned HTTP|^HTTP) 429\b/.test(failure);
 
@@ -1196,15 +1208,24 @@ export default function AdaptiveMFA() {
     engineLoad.current = "loading";
     setConfigLoading(true);
     setConfigLoadFailed(false);
-    // Both loads catch their own errors, so this settles either way.
-    void Promise.all([fetchData(), getScoringConfig()]).then(
-      ([settingsLoaded, scoringLoaded]) => {
-        engineLoad.current =
-          settingsLoaded && scoringLoaded ? "loaded" : "failed";
+    // Both loads catch their own errors. The state is settled in finally, so
+    // even an error here cannot leave the load running and Save disabled.
+    let loaded = false;
+    void Promise.all([fetchData(), getScoringConfig()])
+      .then(([settingsLoaded, scoringLoaded]) => {
         savedSignals.current = buildSignalsPayload(getValues());
+        loaded = settingsLoaded && scoringLoaded;
+      })
+      .catch((error) =>
+        console.error("Error loading the AMFA settings:", error),
+      )
+      .finally(() => {
+        engineLoad.current = loaded ? "loaded" : "failed";
+        if (!loaded) {
+          setConfigLoadFailed(true);
+        }
         setConfigLoading(false);
-      },
-    );
+      });
   }, [realmLoaded, enable, storedEndpoint]);
 
   async function updateParameters() {
@@ -1215,18 +1236,21 @@ export default function AdaptiveMFA() {
         throw new Error(`Realm "${realm}" could not be read`);
       }
 
-      // Only an explicit "true" is on, as for the login: a realm that never
-      // saved this page has no switch, and AMFA is off there.
-      const toggle = realmRep?.attributes?.adaptiveToggle;
+      // The same rule as the login (the plugin's AdaptiveAuthUtils
+      // .isSwitchedOn): a set switch decides, and only "true" is on. A realm
+      // without one is on only when it has an endpoint, as a realm set up
+      // through the admin REST API has; one never set up for AMFA is off.
+      const toggle = String(realmRep?.attributes?.adaptiveToggle ?? "")
+        .trim()
+        .toLowerCase();
+      const endpoint = String(
+        realmRep?.attributes?.adaptiveAuthEndpoint ?? "",
+      ).trim();
       setValue(
         "necessaryParameters.adaptiveToggle",
-        String(toggle ?? "")
-          .trim()
-          .toLowerCase() === "true",
+        toggle ? toggle === "true" : endpoint !== "",
       );
-      setStoredEndpoint(
-        String(realmRep?.attributes?.adaptiveAuthEndpoint ?? "").trim(),
-      );
+      setStoredEndpoint(endpoint);
       setValue(
         "necessaryParameters.adaptiveAuthEndpoint",
         realmRep?.attributes?.adaptiveAuthEndpoint || "",
@@ -1605,10 +1629,20 @@ export default function AdaptiveMFA() {
     );
   };
 
+  // A save that changes the endpoint writes the realm settings only, then loads
+  // the settings from the new endpoint (see onSubmit).
+  const endpointField = useWatch({
+    control,
+    name: "necessaryParameters.adaptiveAuthEndpoint",
+  });
+  const endpointChanged = (endpointField ?? "").trim() !== storedEndpoint;
+
   // Saving is blocked while the form may hold defaults instead of real values:
   // the whole form when switched on, and even the switch when the realm itself
-  // could not be read.
-  const saveBlocked = configLoadFailed && (enable || realmLoadFailed);
+  // could not be read. Correcting the endpoint stays possible, since that save
+  // sends none of the form's other values.
+  const saveBlocked =
+    configLoadFailed && (realmLoadFailed || (enable && !endpointChanged));
 
   const onSubmit = async (data: AuthConfigSuper) => {
     // Defence in depth behind the disabled Save button, which is what actually
@@ -1654,17 +1688,24 @@ export default function AdaptiveMFA() {
         return;
       }
 
-      if (!storedEndpoint) {
-        // A realm without an endpoint has no engine to read or write the risk
-        // signals through yet, so this save stores the realm settings only.
-        // The settings and scoring config load once the endpoint is saved.
-        const endpoint = (
-          data.necessaryParameters.adaptiveAuthEndpoint ?? ""
-        ).trim();
-        if (!endpoint) {
-          addAlert(t("amfaEndpointRequired"), AlertVariant.danger);
-          return;
-        }
+      const endpoint = (
+        data.necessaryParameters.adaptiveAuthEndpoint ?? ""
+      ).trim();
+      if (!endpoint) {
+        addAlert(t("amfaEndpointRequired"), AlertVariant.danger);
+        return;
+      }
+      if (!isHttpUrl(endpoint)) {
+        addAlert(t("amfaEndpointInvalid"), AlertVariant.danger);
+        return;
+      }
+
+      if (endpoint !== storedEndpoint) {
+        // The risk signals and scoring are read and written through the
+        // endpoint saved on the realm, so a new endpoint is saved on its own:
+        // the realm settings only, and then the settings load from the new
+        // engine. This is also how a wrong endpoint is corrected after its load
+        // failed.
         const current = await adminClient.realms.findOne({ realm: saveRealm });
         if (!current) {
           throw new Error(`Realm "${saveRealm}" could not be read`);
@@ -1683,10 +1724,13 @@ export default function AdaptiveMFA() {
             },
           },
         );
-        addAlert(t("amfaEndpointSaved"), AlertVariant.success);
-        if (saveRealm === realm) {
-          setStoredEndpoint(endpoint);
-        }
+        addAlert(
+          t(storedEndpoint ? "amfaEndpointChanged" : "amfaEndpointSaved"),
+          AlertVariant.success,
+        );
+        engineLoad.current = "idle";
+        setConfigLoadFailed(false);
+        setStoredEndpoint(endpoint);
         return;
       }
 
@@ -1715,7 +1759,7 @@ export default function AdaptiveMFA() {
           // silently destroys every non-AMFA realm attribute on each save
           // (frontendUrl, SCIM flags, custom attributes, ...).
           ...realmRep?.attributes,
-          adaptiveAuthEndpoint: data.necessaryParameters.adaptiveAuthEndpoint,
+          adaptiveAuthEndpoint: endpoint,
           adaptiveToggle: data.necessaryParameters.adaptiveToggle,
           fallbackRisk: data.necessaryParameters.fallbackRisk,
           notifyUsersRiskyLogin: data.necessaryParameters.notifyUsersRiskyLogin,
