@@ -89,11 +89,17 @@ test.describe.serial("Adaptive MFA dormancy threshold (full stack)", () => {
     await goToSecurityDefensesTab(page);
     await page.getByRole("tab", { name: "Adaptive MFA" }).click();
     // The form body, Save included, is gated behind this toggle. Idempotent
-    // because a successful save persists it on the realm.
+    // because a successful save persists it on the realm. The form starts off
+    // until the realm answers, and a click toggles: one decided before that
+    // answer and landing after it switches AMFA off again, so the state is
+    // checked anew before every click.
     const toggle = page.locator("#adaptiveToggle");
-    if (!(await toggle.isChecked())) {
-      await switchOn(page, toggle);
-    }
+    await expect(async () => {
+      if (!(await toggle.isChecked())) {
+        await switchOn(page, toggle);
+      }
+      await expect(toggle).toBeChecked({ timeout: 1000 });
+    }).toPass();
   }
 
   const daysField = (page: any) => page.locator("#inActiveAcc-days");
