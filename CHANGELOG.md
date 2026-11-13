@@ -56,6 +56,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never saved this page now shows the switch on, as its logins are
   risk-checked. With the plugin's matching change, logins in a realm that has
   AMFA off continue as low risk and nothing is sent to the engine
+- The Adaptive MFA tab loads only when it is opened, and makes no engine
+  calls while AMFA is off, so a realm without AMFA set up, master included, no
+  longer shows "Could not load" errors on the Security defenses tabs
+- A realm without an engine endpoint can be set up from the page: switching
+  AMFA on asks for the endpoint and saves it first, and the risk signals and
+  scoring load once it is saved
 
 ### Removed
 

@@ -17,6 +17,7 @@ import {
   parameters,
   savedDormancyRow,
   saveButton,
+  STUB_ENDPOINT,
   stubAmfa,
   type Write,
 } from "./adaptive-mfa.ts";
@@ -675,10 +676,14 @@ test.describe.serial("Adaptive MFA error handling", () => {
   test("saving waits for the realm settings to load too", async ({ page }) => {
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
-    let scoringLoaded!: Promise<unknown>;
+    const engineLoads: string[] = [];
     await stubAmfa(page, { realm: realmName });
     await goToAdaptiveMfa(page, realmName, async () => {
-      scoringLoaded = page.waitForResponse("**/amfa-api/fetchScoringConfig");
+      page.on("request", (request) => {
+        if (/fetch(AdaptiveMFAParameters|ScoringConfig)/.test(request.url())) {
+          engineLoads.push(request.url());
+        }
+      });
       await page.route(`**/admin/realms/${realmName}`, async (r) => {
         if (r.request().method() === "GET") {
           await gate;
@@ -687,13 +692,15 @@ test.describe.serial("Adaptive MFA error handling", () => {
       });
     });
 
-    // The engine loads have answered; the realm settings have not.
-    await scoringLoaded;
+    // The realm settings have not answered, and they hold the switch, so the
+    // engine has not been asked for anything yet either.
     await expect(saveButton(page)).toBeDisabled();
+    expect(engineLoads).toEqual([]);
 
     release();
     await expect(saveButton(page)).toBeEnabled();
     await expect(blockedNotice(page)).toHaveCount(0);
+    expect(engineLoads).toHaveLength(2);
   });
 
   test("submitting the form directly cannot bypass the load-failed guard", async ({
@@ -900,6 +907,8 @@ test.describe.serial("Adaptive MFA error handling", () => {
     await expect(saveButton(page)).toBeEnabled();
     await expect(toggle).not.toBeChecked();
     await switchOn(page, toggle);
+    // Switching on loads the settings; Save waits for them.
+    await expect(saveButton(page)).toBeEnabled();
     await saveButton(page).click();
     await expect(alert(page)).toContainText("All the data are saved");
     expect(writes.map((w) => w.kind)).toEqual(["settings", "realm"]);
@@ -968,22 +977,201 @@ test.describe.serial("Adaptive MFA error handling", () => {
     ).toBe("true");
   });
 
-  test("a realm that never saved this page shows AMFA on", async ({ page }) => {
-    // Its logins are risk-checked: only an explicit "false" switches AMFA off.
+  test("a realm that never saved this page shows AMFA off and asks the engine nothing", async ({
+    page,
+  }) => {
+    // Its logins are not risk-checked either: only an explicit "true" switches
+    // AMFA on. Every AMFA endpoint fails here, so any call would show an error.
     const fresh = `adaptive-mfa-fresh-${uuid()}`;
     await adminClient.createRealm(fresh);
     try {
       expect(
         (await adminClient.getRealm(fresh))?.attributes?.adaptiveToggle,
       ).toBeUndefined();
-      await stubAmfa(page, { realm: fresh });
+      const engineCalls: string[] = [];
+      await stubAmfa(page, {
+        realm: fresh,
+        settingsGet: { status: 409, body: '{"error":"not set up"}' },
+        scoringGet: { status: 409, body: '{"error":"not set up"}' },
+      });
+      page.on("request", (request) => {
+        if (/\/amfa-api\/(fetch|update)/.test(request.url())) {
+          engineCalls.push(request.url());
+        }
+      });
       await login(page);
       await goToRealm(page, fresh);
       await goToRealmSettings(page);
       await goToSecurityDefensesTab(page);
       await page.getByRole("tab", { name: "Adaptive MFA" }).click();
-      await expect(page.locator("#adaptiveToggle")).toBeChecked();
       await expect(saveButton(page)).toBeEnabled();
+      await expect(page.locator("#adaptiveToggle")).not.toBeChecked();
+      await expect(alert(page)).toHaveCount(0);
+      expect(engineCalls).toEqual([]);
+    } finally {
+      await adminClient.deleteRealm(fresh);
+    }
+  });
+
+  test("the Adaptive MFA tab loads nothing until it is opened", async ({
+    page,
+  }) => {
+    // The defect: the page mounted with the Headers tab, so a realm whose AMFA
+    // could not load showed the load error on every Security defenses tab.
+    await stubAmfa(page, {
+      realm: realmName,
+      settingsGet: { status: 409, body: '{"error":"not set up"}' },
+    });
+    const stored = await adminClient.getRealm(realmName);
+    await adminClient.updateRealm(realmName, {
+      ...stored,
+      attributes: {
+        ...stored?.attributes,
+        adaptiveToggle: "true",
+        adaptiveAuthEndpoint: STUB_ENDPOINT,
+      },
+    });
+    let settingsLoads = 0;
+    page.on("request", (request) => {
+      if (request.url().includes("/amfa-api/fetchAdaptiveMFAParameters")) {
+        settingsLoads++;
+      }
+    });
+    await login(page);
+    await goToRealm(page, realmName);
+    await goToRealmSettings(page);
+    await goToSecurityDefensesTab(page);
+    await expect(
+      page.getByTestId("security-defenses-headers-tab"),
+    ).toBeVisible();
+    await page.getByTestId("security-defenses-brute-force-tab").click();
+    await expect(alert(page)).toHaveCount(0);
+    expect(settingsLoads).toBe(0);
+
+    await page.getByRole("tab", { name: "Adaptive MFA" }).click();
+    await expect(alert(page)).toContainText(
+      "Could not load the current Adaptive MFA configuration",
+    );
+    expect(settingsLoads).toBe(1);
+  });
+
+  test("a realm with AMFA off asks the engine nothing until it is switched on", async ({
+    page,
+  }) => {
+    // Klajd's case: the load error showed while AMFA was off. Now it shows
+    // only once AMFA is switched on and its settings cannot load.
+    const stored = await adminClient.getRealm(realmName);
+    await adminClient.updateRealm(realmName, {
+      ...stored,
+      attributes: {
+        ...stored?.attributes,
+        adaptiveToggle: "false",
+        adaptiveAuthEndpoint: STUB_ENDPOINT,
+      },
+    });
+    const writes: Write[] = [];
+    await stubAmfa(page, {
+      realm: realmName,
+      settingsGet: {
+        status: 409,
+        body: JSON.stringify({
+          error:
+            "Adaptive MFA is not set up for this realm: Client 'adaptive-auth-api' not found",
+        }),
+      },
+      onWrite: (w) => writes.push(w),
+    });
+    const engineLoads: string[] = [];
+    page.on("request", (request) => {
+      if (/fetch(AdaptiveMFAParameters|ScoringConfig)/.test(request.url())) {
+        engineLoads.push(request.url());
+      }
+    });
+    await login(page);
+    await goToRealm(page, realmName);
+    await goToRealmSettings(page);
+    await goToSecurityDefensesTab(page);
+    await page.getByRole("tab", { name: "Adaptive MFA" }).click();
+    const toggle = page.locator("#adaptiveToggle");
+    await expect(saveButton(page)).toBeEnabled();
+    await expect(toggle).not.toBeChecked();
+    await expect(alert(page)).toHaveCount(0);
+    expect(engineLoads).toEqual([]);
+
+    await switchOn(page, toggle);
+    await expect(alert(page)).toContainText(
+      "Adaptive MFA is not set up for this realm",
+    );
+    await expect(saveButton(page)).toBeDisabled();
+    await expect(blockedNotice(page)).toBeVisible();
+    expect(engineLoads).toHaveLength(2);
+
+    // Switching off again needs nothing from the engine, and switching on
+    // once more tries the load again.
+    await switchOff(page, toggle);
+    await expect(saveButton(page)).toBeEnabled();
+    await switchOn(page, toggle);
+    await expect(blockedNotice(page)).toBeVisible();
+    expect(engineLoads).toHaveLength(4);
+    expect(writes).toEqual([]);
+  });
+
+  test("a realm without an endpoint saves the endpoint first", async ({
+    page,
+  }) => {
+    // A new realm has no endpoint, so there is no engine to load the risk
+    // signals from or save them to yet. Switching it on asks for the endpoint
+    // and saves only the realm settings; the rest loads once it is saved.
+    const fresh = `adaptive-mfa-setup-${uuid()}`;
+    await adminClient.createRealm(fresh);
+    try {
+      const writes: Write[] = [];
+      await stubAmfa(page, { realm: fresh, onWrite: (w) => writes.push(w) });
+      const engineLoads: string[] = [];
+      page.on("request", (request) => {
+        if (/fetch(AdaptiveMFAParameters|ScoringConfig)/.test(request.url())) {
+          engineLoads.push(request.url());
+        }
+      });
+      await login(page);
+      await goToRealm(page, fresh);
+      await goToRealmSettings(page);
+      await goToSecurityDefensesTab(page);
+      await page.getByRole("tab", { name: "Adaptive MFA" }).click();
+      await expect(saveButton(page)).toBeEnabled();
+      await switchOn(page, page.locator("#adaptiveToggle"));
+
+      await expect(page.getByTestId("amfa-set-endpoint-first")).toBeVisible();
+      await expect(
+        page.getByRole("heading", { name: "Risk signals", exact: true }),
+      ).toHaveCount(0);
+      expect(engineLoads).toEqual([]);
+
+      // No endpoint: nothing is saved.
+      await saveButton(page).click();
+      await expect(alert(page)).toContainText(
+        "Enter the AMFA engine endpoint to switch Adaptive MFA on",
+      );
+      expect(writes).toEqual([]);
+      await alert(page).locator("button").first().click();
+
+      await page.getByTestId("adaptiveAuthApiEndpoint").fill(STUB_ENDPOINT);
+      await saveButton(page).click();
+      await expect(alert(page)).toContainText(
+        "Adaptive MFA is on for this realm",
+      );
+      expect(writes.map((w) => w.kind)).toEqual(["realm"]);
+      const attributes = (await adminClient.getRealm(fresh))?.attributes;
+      expect(attributes?.adaptiveToggle).toBe("true");
+      expect(attributes?.adaptiveAuthEndpoint).toBe(STUB_ENDPOINT);
+
+      // The settings now load through the saved endpoint.
+      await expect(
+        page.getByRole("heading", { name: "Risk signals", exact: true }),
+      ).toBeVisible();
+      await expect(page.getByTestId("amfa-set-endpoint-first")).toHaveCount(0);
+      await expect(saveButton(page)).toBeEnabled();
+      expect(engineLoads).toHaveLength(2);
     } finally {
       await adminClient.deleteRealm(fresh);
     }

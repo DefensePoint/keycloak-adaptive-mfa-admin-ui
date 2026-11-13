@@ -21,6 +21,9 @@ export const SCORING_PUT = "**/amfa-api/updateScoringConfig";
 export const GROUPS = "**/amfa-api/groups";
 export const COUNTRIES = "**/amfa-api/countries";
 
+/** The endpoint test realms get; every call through it is stubbed. */
+export const STUB_ENDPOINT = "http://amfa.test";
+
 export const ENGINE_DOWN_BODY = JSON.stringify({
   error: "AMFA engine unreachable: adaptive_auth:80 failed to respond",
 });
@@ -180,19 +183,28 @@ export async function goToAdaptiveMfa(
   realm: string,
   /**
    * Runs before the page loads its configuration, after the rest of the
-   * console loaded. The Security defenses tabs all mount at once, so the
-   * page starts loading when that tab opens, not its own.
+   * console loaded. The page mounts, and starts loading, when its own tab
+   * opens.
    */
   beforeOpen?: () => Promise<void>,
 ) {
   // The page reads the switch from the realm when the tab opens, and a click
-  // before that answers would be undone by it. A realm saved as off is
-  // switched on here first, so the realm's answer always turns the switch on.
+  // before that answers would be undone by it. The realm is switched on here
+  // first, so the realm's answer always turns the switch on. It gets an
+  // endpoint too: the page loads the settings only through a saved one.
   const stored = await adminClient.getRealm(realm);
-  if (stored?.attributes?.adaptiveToggle === "false") {
+  if (
+    stored?.attributes?.adaptiveToggle !== "true" ||
+    !stored?.attributes?.adaptiveAuthEndpoint
+  ) {
     await adminClient.updateRealm(realm, {
       ...stored,
-      attributes: { ...stored.attributes, adaptiveToggle: "true" },
+      attributes: {
+        ...stored?.attributes,
+        adaptiveToggle: "true",
+        adaptiveAuthEndpoint:
+          stored?.attributes?.adaptiveAuthEndpoint || STUB_ENDPOINT,
+      },
     });
   }
   await login(page);
