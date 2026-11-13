@@ -47,10 +47,6 @@ const AMFA_WRITE_RETRY_DELAY_MS = 1500;
 
 type ScoringPayload = { mode?: string; bias?: number; thresholds?: number[] };
 
-// The SPI reports an engine refusal as "AMFA engine returned HTTP <status>: ...",
-// so the engine's config write limit is recognised from that text. A refusal is
-// not counted against the limit, and the window slides, so the one retry is
-// still worth making.
 /* The engine endpoint must be an absolute http(s) URL, as the login calls it. */
 const isHttpUrl = (value: string) => {
   try {
@@ -63,14 +59,20 @@ const isHttpUrl = (value: string) => {
   }
 };
 
+// The SPI reports an engine refusal as "AMFA engine returned HTTP <status>: ...",
+// so the engine's config write limit is recognised from that text. A refusal is
+// not counted against the limit, and the window slides, so the one retry is
+// still worth making.
 const isWriteLimited = (failure: string | null) =>
   !!failure && /(returned HTTP|^HTTP) 429\b/.test(failure);
 
 // A 4xx from the engine or from Keycloak is a refusal, so the write was not
-// applied. Anything else (no answer, the engine unreachable or failing) may have
-// reached the engine before the answer was lost.
+// applied, and so is a 502 for the token Keycloak could not get: it calls the
+// engine only with one. Anything else (no answer, the engine unreachable or
+// failing) may have reached the engine before the answer was lost.
 const isRefusal = (failure: string) =>
-  /(returned HTTP|^HTTP) 4\d\d\b/.test(failure);
+  /(returned HTTP|^HTTP) 4\d\d\b/.test(failure) ||
+  /^HTTP 502: .*Could not get a token for the /.test(failure);
 
 type WriteResult = { failure: string | null; unsure: boolean };
 
@@ -1239,16 +1241,21 @@ export default function AdaptiveMFA() {
       // The same rule as the login (the plugin's AdaptiveAuthUtils
       // .isSwitchedOn): a set switch decides, and only "true" is on. A realm
       // without one is on only when it has an endpoint, as a realm set up
-      // through the admin REST API has; one never set up for AMFA is off.
+      // through the admin REST API has; one never set up for AMFA is off,
+      // unless it chose mandatory failure mode, whose logins are then denied.
       const toggle = String(realmRep?.attributes?.adaptiveToggle ?? "")
         .trim()
         .toLowerCase();
       const endpoint = String(
         realmRep?.attributes?.adaptiveAuthEndpoint ?? "",
       ).trim();
+      const mandatory =
+        String(realmRep?.attributes?.adaptiveAuthFailureMode ?? "")
+          .trim()
+          .toLowerCase() === "mandatory";
       setValue(
         "necessaryParameters.adaptiveToggle",
-        toggle ? toggle === "true" : endpoint !== "",
+        toggle ? toggle === "true" : endpoint !== "" || mandatory,
       );
       setStoredEndpoint(endpoint);
       setValue(

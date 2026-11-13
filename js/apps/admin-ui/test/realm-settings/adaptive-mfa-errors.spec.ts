@@ -323,6 +323,30 @@ test.describe.serial("Adaptive MFA error handling", () => {
     await expect(alert(page)).not.toContainText("Nothing was changed");
   });
 
+  test("a failed token request means nothing reached the engine", async ({
+    page,
+  }) => {
+    // Keycloak answers 502 when it could not get the token for the engine, but
+    // then it never called the engine, so the write was not applied.
+    await stubAmfa(page, {
+      realm: realmName,
+      settingsPut: {
+        status: 502,
+        body: JSON.stringify({
+          error:
+            "Could not get a token for the adaptive-auth-api client: no answer within 5 seconds",
+        }),
+      },
+    });
+    await goToAdaptiveMfa(page, realmName);
+
+    await saveButton(page).click();
+
+    await expect(alert(page)).toContainText("Could not get a token");
+    await expect(alert(page)).toContainText("Nothing was changed");
+    await expect(alert(page)).not.toContainText("may be saved");
+  });
+
   test("a scoring write the engine did not confirm is put back too", async ({
     page,
   }) => {
@@ -1173,6 +1197,38 @@ test.describe.serial("Adaptive MFA error handling", () => {
       await expect(page.getByTestId("amfa-set-endpoint-first")).toHaveCount(0);
       await expect(saveButton(page)).toBeEnabled();
       expect(engineLoads).toHaveLength(2);
+    } finally {
+      await adminClient.deleteRealm(fresh);
+    }
+  });
+
+  test("a realm without a switch in mandatory failure mode shows AMFA on, as the login does", async ({
+    page,
+  }) => {
+    // Mandatory failure mode denies a login AMFA cannot decide, and without an
+    // endpoint it cannot, so the login keeps AMFA on. The page shows it on and
+    // asks for the endpoint, without calling the engine.
+    const fresh = `adaptive-mfa-mandatory-${uuid()}`;
+    await adminClient.createRealm(fresh, {
+      attributes: { adaptiveAuthFailureMode: "mandatory" },
+    });
+    try {
+      const engineCalls: string[] = [];
+      await stubAmfa(page, { realm: fresh });
+      page.on("request", (request) => {
+        if (/\/amfa-api\/(fetch|update)/.test(request.url())) {
+          engineCalls.push(request.url());
+        }
+      });
+      await login(page);
+      await goToRealm(page, fresh);
+      await goToRealmSettings(page);
+      await goToSecurityDefensesTab(page);
+      await page.getByRole("tab", { name: "Adaptive MFA" }).click();
+      await expect(saveButton(page)).toBeEnabled();
+      await expect(page.locator("#adaptiveToggle")).toBeChecked();
+      await expect(page.getByTestId("amfa-set-endpoint-first")).toBeVisible();
+      expect(engineCalls).toEqual([]);
     } finally {
       await adminClient.deleteRealm(fresh);
     }

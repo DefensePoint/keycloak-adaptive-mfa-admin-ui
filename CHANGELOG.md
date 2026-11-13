@@ -62,8 +62,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   AMFA on asks for the endpoint and saves it first, and the risk signals and
   scoring load once it is saved
 - A realm that never saved this page shows AMFA on only when it has an
-  engine endpoint, and off when it has none, the rule the plugin's login uses.
-  Ship it with the plugin release that has the same rule
+  engine endpoint, or chose mandatory failure mode, and off otherwise, the
+  rule the plugin's login uses. Ship it with the plugin release that has the
+  same rule
+- A save whose writes failed because Keycloak could not get its token for the
+  engine says nothing was changed: the engine was never called
 - The engine endpoint must be an http:// or https:// URL. A changed endpoint
   is saved on its own and the risk signals and scoring reload from it, so they
   are no longer written to the old engine, and a mistyped endpoint can be
