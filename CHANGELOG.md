@@ -69,6 +69,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are no longer written to the old engine, and a mistyped endpoint can be
   corrected even when loading from it failed
 
+### Changed
+
+- The IP address signal's description says allowlist and blocklist
+
 ### Removed
 
 - Unused strings for per-signal weight labels and for an event history viewer
