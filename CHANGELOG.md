@@ -71,6 +71,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is saved on its own and the risk signals and scoring reload from it, so they
   are no longer written to the old engine, and a mistyped endpoint can be
   corrected even when loading from it failed
+- A realm without a fallback risk level shows 3, the level the plugin's login
+  uses when the engine cannot be reached, instead of 1, and a save keeps it.
+  Before, any save of the page wrote 1, so logins during an engine outage went
+  through as low risk instead of being stepped up. A stored level the login does
+  not accept is shown as 3 too, and only a level from 1 to 4 can be saved
 
 ### Changed
 
