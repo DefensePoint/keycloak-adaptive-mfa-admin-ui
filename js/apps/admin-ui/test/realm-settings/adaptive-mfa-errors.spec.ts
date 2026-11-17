@@ -1001,12 +1001,13 @@ test.describe.serial("Adaptive MFA error handling", () => {
     ).toBe("true");
   });
 
-  test("a realm with no switch and no endpoint shows AMFA off and asks the engine nothing", async ({
+  test("a realm with no switch and no endpoint shows AMFA on, asks for the endpoint, and asks the engine nothing", async ({
     page,
   }) => {
-    // Its logins are not risk-checked either: without a switch, AMFA is on only
-    // for a realm with an endpoint. Every AMFA endpoint fails here, so any call
-    // would show an error.
+    // As the login does: without a switch AMFA is on, and with no endpoint its
+    // logins get the fallback level. That is also a realm whose AMFA attributes
+    // an admin REST update removed, so the page must not show it off. Every
+    // AMFA endpoint fails here, so any call would show an error.
     const fresh = `adaptive-mfa-fresh-${uuid()}`;
     await adminClient.createRealm(fresh);
     try {
@@ -1030,7 +1031,8 @@ test.describe.serial("Adaptive MFA error handling", () => {
       await goToSecurityDefensesTab(page);
       await page.getByRole("tab", { name: "Adaptive MFA" }).click();
       await expect(saveButton(page)).toBeEnabled();
-      await expect(page.locator("#adaptiveToggle")).not.toBeChecked();
+      await expect(page.locator("#adaptiveToggle")).toBeChecked();
+      await expect(page.getByTestId("amfa-set-endpoint-first")).toBeVisible();
       await expect(alert(page)).toHaveCount(0);
       expect(engineCalls).toEqual([]);
     } finally {
@@ -1144,9 +1146,10 @@ test.describe.serial("Adaptive MFA error handling", () => {
   test("a realm without an endpoint saves the endpoint first", async ({
     page,
   }) => {
-    // A new realm has no endpoint, so there is no engine to load the risk
-    // signals from or save them to yet. Switching it on asks for the endpoint
-    // and saves only the realm settings; the rest loads once it is saved.
+    // A new realm has no switch, so it is on, and no endpoint, so there is no
+    // engine to load the risk signals from or save them to yet. The page asks
+    // for the endpoint and saves only the realm settings; the rest loads once
+    // it is saved.
     const fresh = `adaptive-mfa-setup-${uuid()}`;
     await adminClient.createRealm(fresh);
     try {
@@ -1164,7 +1167,7 @@ test.describe.serial("Adaptive MFA error handling", () => {
       await goToSecurityDefensesTab(page);
       await page.getByRole("tab", { name: "Adaptive MFA" }).click();
       await expect(saveButton(page)).toBeEnabled();
-      await switchOn(page, page.locator("#adaptiveToggle"));
+      await expect(page.locator("#adaptiveToggle")).toBeChecked();
 
       await expect(page.getByTestId("amfa-set-endpoint-first")).toBeVisible();
       await expect(
@@ -1205,9 +1208,9 @@ test.describe.serial("Adaptive MFA error handling", () => {
   test("a realm without a switch in mandatory failure mode shows AMFA on, as the login does", async ({
     page,
   }) => {
-    // Mandatory failure mode denies a login AMFA cannot decide, and without an
-    // endpoint it cannot, so the login keeps AMFA on. The page shows it on and
-    // asks for the endpoint, without calling the engine.
+    // Without a switch AMFA is on in either failure mode; in mandatory mode a
+    // login without an endpoint is denied. The page shows it on and asks for
+    // the endpoint, without calling the engine.
     const fresh = `adaptive-mfa-mandatory-${uuid()}`;
     await adminClient.createRealm(fresh, {
       attributes: { adaptiveAuthFailureMode: "mandatory" },
@@ -1231,6 +1234,38 @@ test.describe.serial("Adaptive MFA error handling", () => {
       expect(engineCalls).toEqual([]);
     } finally {
       await adminClient.deleteRealm(fresh);
+    }
+  });
+
+  test("only a switch set to false shows AMFA off, as the login reads it", async ({
+    page,
+  }) => {
+    // A hand-set value such as "yes" keeps the realm's logins risk-checked,
+    // and " FALSE " switches them off, so the page shows each the same way.
+    for (const [value, on] of [
+      ["yes", true],
+      [" FALSE ", false],
+    ] as const) {
+      const stored = await adminClient.getRealm(realmName);
+      await adminClient.updateRealm(realmName, {
+        ...stored,
+        attributes: {
+          ...stored?.attributes,
+          adaptiveToggle: value,
+          adaptiveAuthEndpoint: STUB_ENDPOINT,
+        },
+      });
+      await stubAmfa(page, { realm: realmName });
+      await login(page);
+      await goToRealm(page, realmName);
+      await goToRealmSettings(page);
+      await goToSecurityDefensesTab(page);
+      await page.getByRole("tab", { name: "Adaptive MFA" }).click();
+      const toggle = page.locator("#adaptiveToggle");
+      await (on
+        ? expect(toggle).toBeChecked()
+        : expect(toggle).not.toBeChecked());
+      await page.context().clearCookies();
     }
   });
 

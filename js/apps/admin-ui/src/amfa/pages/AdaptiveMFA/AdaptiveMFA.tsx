@@ -1253,24 +1253,18 @@ export default function AdaptiveMFA() {
       }
 
       // The same rule as the login (the plugin's AdaptiveAuthUtils
-      // .isSwitchedOn): a set switch decides, and only "true" is on. A realm
-      // without one is on only when it has an endpoint, as a realm set up
-      // through the admin REST API has; one never set up for AMFA is off,
-      // unless it chose mandatory failure mode, whose logins are then denied.
+      // .isSwitchedOff): only an explicit "false" is off. A realm without the
+      // switch is on: its login steps ask the engine, or, with no endpoint,
+      // apply the fallback level or deny. Such a realm may have lost its AMFA
+      // attributes to an admin REST update, and showing it off would hide that
+      // its logins step up; shown on, the page asks for the endpoint.
       const toggle = String(realmRep?.attributes?.adaptiveToggle ?? "")
         .trim()
         .toLowerCase();
       const endpoint = String(
         realmRep?.attributes?.adaptiveAuthEndpoint ?? "",
       ).trim();
-      const mandatory =
-        String(realmRep?.attributes?.adaptiveAuthFailureMode ?? "")
-          .trim()
-          .toLowerCase() === "mandatory";
-      setValue(
-        "necessaryParameters.adaptiveToggle",
-        toggle ? toggle === "true" : endpoint !== "" || mandatory,
-      );
+      setValue("necessaryParameters.adaptiveToggle", toggle !== "false");
       setStoredEndpoint(endpoint);
       setValue(
         "necessaryParameters.adaptiveAuthEndpoint",
