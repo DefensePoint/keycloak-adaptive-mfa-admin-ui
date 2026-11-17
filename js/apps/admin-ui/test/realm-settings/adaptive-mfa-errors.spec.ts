@@ -1303,7 +1303,7 @@ test.describe.serial("Adaptive MFA error handling", () => {
     await expect(saveButton(page)).toBeEnabled();
     await saveButton(page).click();
 
-    await expect(alert(page)).toContainText("Endpoint saved.");
+    await expect(alert(page)).toContainText("Endpoint saved, with Adaptive MFA switched on");
     expect(writes.map((w) => w.kind)).toEqual(["realm"]);
     const attributes = (await adminClient.getRealm(realmName))?.attributes;
     expect(attributes?.adaptiveAuthEndpoint).toBe(STUB_ENDPOINT);
@@ -1375,5 +1375,60 @@ test.describe.serial("Adaptive MFA error handling", () => {
     await saveButton(page).click();
     await expect(alert(page)).toContainText("All the data are saved");
     expect(writes.map((w) => w.kind)).toEqual(["realm", "settings", "realm"]);
+  });
+
+  test("a new endpoint without config does not show or save the old engine's values", async ({
+    page,
+  }) => {
+    // The defect: the reload set only what the new engine sent, and an engine
+    // without config for the realm sends no scoring, so the old engine's
+    // scoring stayed on the page and the next Save wrote it to the new engine.
+    const writes: Write[] = [];
+    await stubAmfa(page, {
+      realm: realmName,
+      settingsGet: [
+        { status: 200, body: JSON.stringify(parameters(realmName)) },
+        { status: 200, body: "[]" },
+      ],
+      scoringGet: [
+        {
+          status: 200,
+          body: JSON.stringify({ mode: "bayesian", thresholds: [0.3, 0.6, 0.85] }),
+        },
+        { status: 200, body: "null" },
+      ],
+      onWrite: (w) => writes.push(w),
+    });
+    await goToAdaptiveMfa(page, realmName);
+    await expect(page.locator("#scoringMode")).toHaveValue("bayesian");
+    await expandSignal(page, "inActiveAcc");
+    await expect(daysField(page)).toHaveValue(String(EFFECTIVE_DAYS));
+
+    await page
+      .getByTestId("adaptiveAuthApiEndpoint")
+      .fill(`http://amfa-${uuid()}.test`);
+    await saveButton(page).click();
+    await expect(alert(page)).toContainText(
+      "Endpoint saved, with Adaptive MFA switched on",
+    );
+    await expect(saveButton(page)).toBeEnabled();
+
+    await expect(page.locator("#scoringMode")).toHaveValue("weight");
+    await expect(page.locator("#scoring-thresholds")).toHaveCount(0);
+    await expect(daysField(page)).not.toHaveValue(String(EFFECTIVE_DAYS));
+
+    await alert(page).locator("button").first().click();
+    await saveButton(page).click();
+    await expect(alert(page)).toContainText("All the data are saved");
+    expect(writes.map((w) => w.kind)).toEqual([
+      "realm",
+      "settings",
+      "scoring",
+      "realm",
+    ]);
+    expect(savedDormancyRow(writes[1].payload).inactive_days).not.toBe(
+      EFFECTIVE_DAYS,
+    );
+    expect(writes[2].payload).toEqual({ mode: "weight" });
   });
 });

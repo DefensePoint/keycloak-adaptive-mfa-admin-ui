@@ -1210,6 +1210,20 @@ export default function AdaptiveMFA() {
     engineLoad.current = "loading";
     setConfigLoading(true);
     setConfigLoadFailed(false);
+    // The load sets only what the engine sends, and an engine without config
+    // for the realm sends no scoring. After an endpoint change the form would
+    // then show the old engine's values as the new one's, and the next Save
+    // would write them there, so the form starts from its defaults.
+    methods.reset(
+      {
+        ...methods.formState.defaultValues,
+        necessaryParameters: getValues("necessaryParameters"),
+      },
+      { keepDefaultValues: true },
+    );
+    setScoringMode("weight");
+    setScoringBias("");
+    setScoringThresholds("");
     // Both loads catch their own errors. The state is settled in finally, so
     // even an error here cannot leave the load running and Save disabled.
     let loaded = false;
