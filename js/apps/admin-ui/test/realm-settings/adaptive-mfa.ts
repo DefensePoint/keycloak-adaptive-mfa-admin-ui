@@ -21,6 +21,9 @@ export const SCORING_PUT = "**/amfa-api/updateScoringConfig";
 export const GROUPS = "**/amfa-api/groups";
 export const COUNTRIES = "**/amfa-api/countries";
 
+/** The endpoint test realms get; every call through it is stubbed. */
+export const STUB_ENDPOINT = "http://amfa.test";
+
 export const ENGINE_DOWN_BODY = JSON.stringify({
   error: "AMFA engine unreachable: adaptive_auth:80 failed to respond",
 });
@@ -77,7 +80,7 @@ export type Write = {
 
 export type Stubs = {
   realm: string;
-  settingsGet?: Response;
+  settingsGet?: Answers;
   settingsPut?: Answers;
   scoringGet?: Response;
   scoringPut?: Answers;
@@ -108,17 +111,18 @@ export async function stubAmfa(page: Page, stubs: Stubs) {
     body: r.body,
   });
 
-  const settingsGet =
-    stubs.settingsGet ?? {
-      status: 200,
-      body: JSON.stringify(parameters(stubs.realm)),
-    };
   const answer = (answers: Answers | undefined) => {
     const list = Array.isArray(answers)
       ? [...answers]
       : [answers ?? { status: 200, body: '"success"' }];
     return () => (list.length > 1 ? list.shift()! : list[0]);
   };
+  const settingsGet = answer(
+    stubs.settingsGet ?? {
+      status: 200,
+      body: JSON.stringify(parameters(stubs.realm)),
+    },
+  );
   const settingsPut = answer(stubs.settingsPut);
   const scoringGet =
     stubs.scoringGet ?? { status: 200, body: JSON.stringify({ mode: "weight" }) };
@@ -145,7 +149,7 @@ export async function stubAmfa(page: Page, stubs: Stubs) {
 
   await page.route(SETTINGS_GET, async (r: Route) => {
     await stubs.settingsGetGate;
-    return r.fulfill(json(settingsGet));
+    return r.fulfill(json(settingsGet()));
   });
   await page.route(SCORING_GET, async (r: Route) => {
     await stubs.scoringGetGate;
@@ -180,19 +184,28 @@ export async function goToAdaptiveMfa(
   realm: string,
   /**
    * Runs before the page loads its configuration, after the rest of the
-   * console loaded. The Security defenses tabs all mount at once, so the
-   * page starts loading when that tab opens, not its own.
+   * console loaded. The page mounts, and starts loading, when its own tab
+   * opens.
    */
   beforeOpen?: () => Promise<void>,
 ) {
   // The page reads the switch from the realm when the tab opens, and a click
-  // before that answers would be undone by it. A realm saved as off is
-  // switched on here first, so the realm's answer always turns the switch on.
+  // before that answers would be undone by it. The realm is switched on here
+  // first, so the realm's answer always turns the switch on. It gets an
+  // endpoint too: the page loads the settings only through a saved one.
   const stored = await adminClient.getRealm(realm);
-  if (stored?.attributes?.adaptiveToggle === "false") {
+  if (
+    stored?.attributes?.adaptiveToggle !== "true" ||
+    !stored?.attributes?.adaptiveAuthEndpoint
+  ) {
     await adminClient.updateRealm(realm, {
       ...stored,
-      attributes: { ...stored.attributes, adaptiveToggle: "true" },
+      attributes: {
+        ...stored?.attributes,
+        adaptiveToggle: "true",
+        adaptiveAuthEndpoint:
+          stored?.attributes?.adaptiveAuthEndpoint || STUB_ENDPOINT,
+      },
     });
   }
   await login(page);
