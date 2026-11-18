@@ -82,7 +82,7 @@ export type Stubs = {
   realm: string;
   settingsGet?: Answers;
   settingsPut?: Answers;
-  scoringGet?: Response;
+  scoringGet?: Answers;
   scoringPut?: Answers;
   /** When set, the Keycloak realm update (the AMFA attributes) answers this. */
   realmPut?: Response;
@@ -124,8 +124,9 @@ export async function stubAmfa(page: Page, stubs: Stubs) {
     },
   );
   const settingsPut = answer(stubs.settingsPut);
-  const scoringGet =
-    stubs.scoringGet ?? { status: 200, body: JSON.stringify({ mode: "weight" }) };
+  const scoringGet = answer(
+    stubs.scoringGet ?? { status: 200, body: JSON.stringify({ mode: "weight" }) },
+  );
   const scoringPut = answer(stubs.scoringPut);
   const realmOf = (r: Route) =>
     decodeURIComponent(
@@ -153,7 +154,7 @@ export async function stubAmfa(page: Page, stubs: Stubs) {
   });
   await page.route(SCORING_GET, async (r: Route) => {
     await stubs.scoringGetGate;
-    return r.fulfill(json(scoringGet));
+    return r.fulfill(json(scoringGet()));
   });
   await page.route(SETTINGS_PUT, async (r: Route) => {
     stubs.onSave?.(parsed(r));
