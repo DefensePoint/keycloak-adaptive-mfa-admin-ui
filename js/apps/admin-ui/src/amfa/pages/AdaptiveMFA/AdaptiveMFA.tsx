@@ -59,6 +59,17 @@ const isHttpUrl = (value: string) => {
   }
 };
 
+// When the engine cannot be reached, the login continues at the realm's fallback
+// risk level: 1 to 4, and 3 (a step-up) for a realm without one or with another
+// value. The page shows and saves that same level, so a save never lowers it.
+const DEFAULT_FALLBACK_RISK = 3;
+const isFallbackRisk = (value: unknown) =>
+  /^[1-4]$/.test(String(value ?? "").trim());
+const effectiveFallbackRisk = (stored: unknown) =>
+  isFallbackRisk(stored)
+    ? Number(String(stored).trim())
+    : DEFAULT_FALLBACK_RISK;
+
 // The SPI reports an engine refusal as "AMFA engine returned HTTP <status>: ...",
 // so the engine's config write limit is recognised from that text. A refusal is
 // not counted against the limit, and the window slides, so the one retry is
@@ -687,7 +698,7 @@ export default function AdaptiveMFA() {
         necessaryParameters: {
           adaptiveToggle: false,
           adaptiveAuthEndpoint: "",
-          fallbackRisk: 1,
+          fallbackRisk: DEFAULT_FALLBACK_RISK,
           notifyUsersRiskyLogin: true,
         },
         client: {
@@ -1272,7 +1283,7 @@ export default function AdaptiveMFA() {
       );
       setValue(
         "necessaryParameters.fallbackRisk",
-        realmRep?.attributes?.fallbackRisk || 1,
+        effectiveFallbackRisk(realmRep?.attributes?.fallbackRisk),
       );
       setValue(
         "necessaryParameters.notifyUsersRiskyLogin",
@@ -1714,6 +1725,10 @@ export default function AdaptiveMFA() {
         addAlert(t("amfaEndpointInvalid"), AlertVariant.danger);
         return;
       }
+      if (!isFallbackRisk(data.necessaryParameters.fallbackRisk)) {
+        addAlert(t("amfaFallbackRiskInvalid"), AlertVariant.danger);
+        return;
+      }
 
       if (endpoint !== storedEndpoint) {
         // The risk signals and scoring are read and written through the
@@ -1915,14 +1930,14 @@ export default function AdaptiveMFA() {
             >
               <Controller
                 name="necessaryParameters.fallbackRisk"
-                defaultValue={1}
+                defaultValue={DEFAULT_FALLBACK_RISK}
                 control={control}
                 render={({ field }) => (
                   <TextInput
                     id="necessaryParametersId"
                     type="number"
                     min="1"
-                    max="10"
+                    max="4"
                     value={field.value}
                     onChange={field.onChange}
                   />
