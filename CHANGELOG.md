@@ -82,6 +82,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The Geolocation signal's country lists are labelled "Countries Allowlist"
+  and "Countries Blocklist", as in the Point admin UI; they said
+  "Countries Whitelist" and "Countries Blacklist"
 - The IP address signal's description says allowlist and blocklist
 
 ### Removed
