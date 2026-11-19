@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-19
+
+Released together with keycloak-adaptive-mfa 1.1.0; use the two together.
+Several of the fixes below match changes in that plugin release: how the
+AMFA switch is read, setting up a realm without an engine endpoint, and the
+messages of a refused save. Like 1.0.1, the JAR is built against Keycloak
+26.6.3 and replaces that version's stock admin UI JAR.
+
 ### Fixed
 
 - An empty or blank row in the operating system or VPN / Proxy allow and
@@ -103,4 +111,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Failure mode and fallback risk level configuration
 - SECURITY.md, CODE_OF_CONDUCT.md, and CONTRIBUTING.md
 
+[1.1.0]: https://github.com/DefensePoint/keycloak-adaptive-mfa-admin-ui/releases/tag/v1.1.0
 [1.0.1]: https://github.com/DefensePoint/keycloak-adaptive-mfa-admin-ui/releases/tag/v1.0.1
