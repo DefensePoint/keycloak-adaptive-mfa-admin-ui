@@ -52,10 +52,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - AMFA can be switched off again: Save stays visible when the switch is
   off, and saving then only writes the realm's switch, so it also works while
   the engine is down. It is still blocked when the realm itself could not be
-  read, as the switch then does not show the realm's real state. A realm that
-  never saved this page now shows the switch on, as its logins are
-  risk-checked. With the plugin's matching change, logins in a realm that has
-  AMFA off continue as low risk and nothing is sent to the engine
+  read, as the switch then does not show the realm's real state. With the
+  plugin's matching change, logins in a realm that has AMFA off continue as
+  low risk and nothing is sent to the engine
+- The Adaptive MFA tab loads only when it is opened, and makes no engine
+  calls while AMFA is off or the realm has no engine endpoint, so a realm
+  without AMFA set up, master included, no longer shows "Could not load"
+  errors on the Security defenses tabs
+- A realm without an engine endpoint can be set up from the page: with AMFA
+  on, the page asks for the endpoint and saves it first, and the risk signals
+  and scoring load once it is saved
+- The switch is read as the plugin's login reads it: only an explicit
+  `false` shows AMFA off, and a realm without the switch shows it on. Such a
+  realm may have the AMFA step in its login and have lost its AMFA attributes
+  to an admin REST update; its logins then step up at the fallback level, so
+  the page shows it on and asks for the endpoint rather than showing it off.
+  Ship it with the plugin release that has the same rule
+- A save whose writes failed because Keycloak could not get its token for the
+  engine says nothing was changed: the engine was never called
+- The engine endpoint must be an http:// or https:// URL. A changed endpoint
+  is saved on its own and the risk signals and scoring reload from it, so they
+  are no longer written to the old engine, and a mistyped endpoint can be
+  corrected even when loading from it failed
+- A realm without a fallback risk level shows 3, the level the plugin's login
+  uses when the engine cannot be reached, instead of 1, and a save keeps it.
+  Before, any save of the page wrote 1, so logins during an engine outage went
+  through as low risk instead of being stepped up. A stored level the login does
+  not accept is shown as 3 too, and only a level from 1 to 4 can be saved
+
+### Changed
+
+- The Geolocation signal's country lists are labelled "Countries Allowlist"
+  and "Countries Blocklist", as in the Point admin UI; they said
+  "Countries Whitelist" and "Countries Blacklist"
+- The IP address signal's description says allowlist and blocklist
 
 ### Removed
 

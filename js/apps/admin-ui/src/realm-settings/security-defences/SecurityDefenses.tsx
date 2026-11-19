@@ -16,7 +16,10 @@ export const SecurityDefenses = ({ realm, save }: SecurityDefensesProps) => {
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState(10);
   return (
+    // Each tab mounts when first opened: the Adaptive MFA tab loads from the
+    // AMFA engine, and its errors belong on that tab, not on the others.
     <Tabs
+      mountOnEnter
       activeKey={activeTab}
       onSelect={(_, key) => setActiveTab(key as number)}
     >

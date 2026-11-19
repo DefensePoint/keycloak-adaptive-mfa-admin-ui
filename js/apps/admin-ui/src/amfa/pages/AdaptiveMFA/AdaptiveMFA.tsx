@@ -2,6 +2,7 @@ import { Control, Controller, FieldValues, FormProvider, useFieldArray, useForm,
 import { MultiLineInput } from "../../../components/multi-line-input/MultiLineInput";
 import {
   ActionGroup,
+  Alert,
   AlertVariant,
   Button,
   Card,
@@ -46,6 +47,29 @@ const AMFA_WRITE_RETRY_DELAY_MS = 1500;
 
 type ScoringPayload = { mode?: string; bias?: number; thresholds?: number[] };
 
+/* The engine endpoint must be an absolute http(s) URL, as the login calls it. */
+const isHttpUrl = (value: string) => {
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") && !!url.host
+    );
+  } catch {
+    return false;
+  }
+};
+
+// When the engine cannot be reached, the login continues at the realm's fallback
+// risk level: 1 to 4, and 3 (a step-up) for a realm without one or with another
+// value. The page shows and saves that same level, so a save never lowers it.
+const DEFAULT_FALLBACK_RISK = 3;
+const isFallbackRisk = (value: unknown) =>
+  /^[1-4]$/.test(String(value ?? "").trim());
+const effectiveFallbackRisk = (stored: unknown) =>
+  isFallbackRisk(stored)
+    ? Number(String(stored).trim())
+    : DEFAULT_FALLBACK_RISK;
+
 // The SPI reports an engine refusal as "AMFA engine returned HTTP <status>: ...",
 // so the engine's config write limit is recognised from that text. A refusal is
 // not counted against the limit, and the window slides, so the one retry is
@@ -54,10 +78,12 @@ const isWriteLimited = (failure: string | null) =>
   !!failure && /(returned HTTP|^HTTP) 429\b/.test(failure);
 
 // A 4xx from the engine or from Keycloak is a refusal, so the write was not
-// applied. Anything else (no answer, the engine unreachable or failing) may have
-// reached the engine before the answer was lost.
+// applied, and so is a 502 for the token Keycloak could not get: it calls the
+// engine only with one. Anything else (no answer, the engine unreachable or
+// failing) may have reached the engine before the answer was lost.
 const isRefusal = (failure: string) =>
-  /(returned HTTP|^HTTP) 4\d\d\b/.test(failure);
+  /(returned HTTP|^HTTP) 4\d\d\b/.test(failure) ||
+  /^HTTP 502: .*Could not get a token for the /.test(failure);
 
 type WriteResult = { failure: string | null; unsure: boolean };
 
@@ -264,10 +290,18 @@ export default function AdaptiveMFA() {
   // default rather than the realm's real state, so not even switching off is
   // allowed: it could switch off a realm that has AMFA on.
   const [realmLoadFailed, setRealmLoadFailed] = useState(false);
-  // Set until the settings, the scoring config and the realm attributes have
-  // loaded. Until then the form holds its built-in defaults too, so saving is
-  // blocked the same way.
+  // Set until the realm attributes have loaded, and again while the engine's
+  // settings and scoring config load. Until then the form holds its built-in
+  // defaults too, so saving is blocked the same way.
   const [configLoading, setConfigLoading] = useState(true);
+  const [realmLoaded, setRealmLoaded] = useState(false);
+  // The engine endpoint the realm has saved. The settings and scoring config are
+  // read through it, so a realm without one has none to show or overwrite yet.
+  const [storedEndpoint, setStoredEndpoint] = useState("");
+  // Whether the engine's settings and scoring config are in the form. They are
+  // loaded only while the switch is on: a realm with AMFA off, which every realm
+  // is until it is switched on, makes no engine calls and shows no errors.
+  const engineLoad = useRef<"idle" | "loading" | "loaded" | "failed">("idle");
   // The risk signals and scoring config as the engine holds them: as loaded, then
   // as last saved. A save that fails part way writes these back, so the realm is
   // never left with half of a save applied.
@@ -664,7 +698,7 @@ export default function AdaptiveMFA() {
         necessaryParameters: {
           adaptiveToggle: false,
           adaptiveAuthEndpoint: "",
-          fallbackRisk: 1,
+          fallbackRisk: DEFAULT_FALLBACK_RISK,
           notifyUsersRiskyLogin: true,
         },
         client: {
@@ -914,7 +948,7 @@ export default function AdaptiveMFA() {
           "amfaLoadError",
           new Error(`HTTP ${response.status}: ${await response.text()}`),
         );
-        return;
+        return false;
       }
       const jsonData = await response.json();
       console.log("Response from BE:", jsonData);
@@ -1109,10 +1143,12 @@ export default function AdaptiveMFA() {
           }
         });
       }
+      return true;
     } catch (error) {
       console.error("Error fetching data:", error);
       setConfigLoadFailed(true);
       addError("amfaLoadError", error);
+      return false;
     }
   };
 
@@ -1137,6 +1173,7 @@ export default function AdaptiveMFA() {
             Array.isArray(data.thresholds) ? data.thresholds.join(", ") : "",
           );
         }
+        return true;
       } else {
         // The scoring fields feed the save payload too, so an unnoticed failure
         // here would write the default "weight" mode over the realm's real
@@ -1146,29 +1183,77 @@ export default function AdaptiveMFA() {
           "amfaLoadError",
           new Error(`HTTP ${response.status}: ${await response.text()}`),
         );
+        return false;
       }
     } catch (error) {
       console.error("Error fetching scoring config:", error);
       setConfigLoadFailed(true);
       addError("amfaLoadError", error);
+      return false;
     }
   };
 
   useEffect(() => {
-    // All three loads catch their own errors, so this settles either way. The
-    // realm attributes are one of them: a save writes them back from the form,
-    // so saving after they failed to load would put the defaults in their place.
-    void Promise.all([
-      fetchData(),
-      getScoringConfig(),
-      updateParameters(),
-    ]).finally(() => {
-      savedSignals.current = buildSignalsPayload(getValues());
-      setConfigLoading(false);
-    });
+    // The realm attributes come first: they hold the switch, and a save writes
+    // them back from the form, so saving after they failed to load would put the
+    // defaults in their place. The load catches its own errors.
+    void updateParameters().finally(() => setRealmLoaded(true));
     getCountries();
     getGroups();
   }, []);
+
+  useEffect(() => {
+    if (!realmLoaded || engineLoad.current === "loading") {
+      return;
+    }
+    // Nothing to load while AMFA is off, for a realm without an endpoint, or
+    // when the settings are already in the form. A load that failed is tried
+    // again the next time the switch is turned on.
+    if (
+      realmLoadFailed ||
+      !enable ||
+      !storedEndpoint ||
+      engineLoad.current === "loaded"
+    ) {
+      setConfigLoading(false);
+      return;
+    }
+    engineLoad.current = "loading";
+    setConfigLoading(true);
+    setConfigLoadFailed(false);
+    // The load sets only what the engine sends, and an engine without config
+    // for the realm sends no scoring. After an endpoint change the form would
+    // then show the old engine's values as the new one's, and the next Save
+    // would write them there, so the form starts from its defaults.
+    methods.reset(
+      {
+        ...methods.formState.defaultValues,
+        necessaryParameters: getValues("necessaryParameters"),
+      },
+      { keepDefaultValues: true },
+    );
+    setScoringMode("weight");
+    setScoringBias("");
+    setScoringThresholds("");
+    // Both loads catch their own errors. The state is settled in finally, so
+    // even an error here cannot leave the load running and Save disabled.
+    let loaded = false;
+    void Promise.all([fetchData(), getScoringConfig()])
+      .then(([settingsLoaded, scoringLoaded]) => {
+        savedSignals.current = buildSignalsPayload(getValues());
+        loaded = settingsLoaded && scoringLoaded;
+      })
+      .catch((error) =>
+        console.error("Error loading the AMFA settings:", error),
+      )
+      .finally(() => {
+        engineLoad.current = loaded ? "loaded" : "failed";
+        if (!loaded) {
+          setConfigLoadFailed(true);
+        }
+        setConfigLoading(false);
+      });
+  }, [realmLoaded, enable, storedEndpoint]);
 
   async function updateParameters() {
     try {
@@ -1178,22 +1263,27 @@ export default function AdaptiveMFA() {
         throw new Error(`Realm "${realm}" could not be read`);
       }
 
-      // Only an explicit "false" is off, as for the login: a realm that never
-      // saved this page has no switch, and its logins are risk-checked.
-      const toggle = realmRep?.attributes?.adaptiveToggle;
-      setValue(
-        "necessaryParameters.adaptiveToggle",
-        String(toggle ?? "")
-          .trim()
-          .toLowerCase() !== "false",
-      );
+      // The same rule as the login (the plugin's AdaptiveAuthUtils
+      // .isSwitchedOff): only an explicit "false" is off. A realm without the
+      // switch is on: its login steps ask the engine, or, with no endpoint,
+      // apply the fallback level or deny. Such a realm may have lost its AMFA
+      // attributes to an admin REST update, and showing it off would hide that
+      // its logins step up; shown on, the page asks for the endpoint.
+      const toggle = String(realmRep?.attributes?.adaptiveToggle ?? "")
+        .trim()
+        .toLowerCase();
+      const endpoint = String(
+        realmRep?.attributes?.adaptiveAuthEndpoint ?? "",
+      ).trim();
+      setValue("necessaryParameters.adaptiveToggle", toggle !== "false");
+      setStoredEndpoint(endpoint);
       setValue(
         "necessaryParameters.adaptiveAuthEndpoint",
         realmRep?.attributes?.adaptiveAuthEndpoint || "",
       );
       setValue(
         "necessaryParameters.fallbackRisk",
-        realmRep?.attributes?.fallbackRisk || 1,
+        effectiveFallbackRisk(realmRep?.attributes?.fallbackRisk),
       );
       setValue(
         "necessaryParameters.notifyUsersRiskyLogin",
@@ -1565,10 +1655,20 @@ export default function AdaptiveMFA() {
     );
   };
 
+  // A save that changes the endpoint writes the realm settings only, then loads
+  // the settings from the new endpoint (see onSubmit).
+  const endpointField = useWatch({
+    control,
+    name: "necessaryParameters.adaptiveAuthEndpoint",
+  });
+  const endpointChanged = (endpointField ?? "").trim() !== storedEndpoint;
+
   // Saving is blocked while the form may hold defaults instead of real values:
   // the whole form when switched on, and even the switch when the realm itself
-  // could not be read.
-  const saveBlocked = configLoadFailed && (enable || realmLoadFailed);
+  // could not be read. Correcting the endpoint stays possible, since that save
+  // sends none of the form's other values.
+  const saveBlocked =
+    configLoadFailed && (realmLoadFailed || (enable && !endpointChanged));
 
   const onSubmit = async (data: AuthConfigSuper) => {
     // Defence in depth behind the disabled Save button, which is what actually
@@ -1614,6 +1714,56 @@ export default function AdaptiveMFA() {
         return;
       }
 
+      const endpoint = (
+        data.necessaryParameters.adaptiveAuthEndpoint ?? ""
+      ).trim();
+      if (!endpoint) {
+        addAlert(t("amfaEndpointRequired"), AlertVariant.danger);
+        return;
+      }
+      if (!isHttpUrl(endpoint)) {
+        addAlert(t("amfaEndpointInvalid"), AlertVariant.danger);
+        return;
+      }
+      if (!isFallbackRisk(data.necessaryParameters.fallbackRisk)) {
+        addAlert(t("amfaFallbackRiskInvalid"), AlertVariant.danger);
+        return;
+      }
+
+      if (endpoint !== storedEndpoint) {
+        // The risk signals and scoring are read and written through the
+        // endpoint saved on the realm, so a new endpoint is saved on its own:
+        // the realm settings only, and then the settings load from the new
+        // engine. This is also how a wrong endpoint is corrected after its load
+        // failed.
+        const current = await adminClient.realms.findOne({ realm: saveRealm });
+        if (!current) {
+          throw new Error(`Realm "${saveRealm}" could not be read`);
+        }
+        await adminClient.realms.update(
+          { realm: saveRealm },
+          {
+            ...current,
+            attributes: {
+              ...current.attributes,
+              adaptiveAuthEndpoint: endpoint,
+              adaptiveToggle: true,
+              fallbackRisk: data.necessaryParameters.fallbackRisk,
+              notifyUsersRiskyLogin:
+                data.necessaryParameters.notifyUsersRiskyLogin,
+            },
+          },
+        );
+        addAlert(
+          t(storedEndpoint ? "amfaEndpointChanged" : "amfaEndpointSaved"),
+          AlertVariant.success,
+        );
+        engineLoad.current = "idle";
+        setConfigLoadFailed(false);
+        setStoredEndpoint(endpoint);
+        return;
+      }
+
       // Validating the whitelists/blacklist ip inputs
       for (let index = 0; index < data.ipAddress.length; index++) {
         const ipAddress = data.ipAddress[index];
@@ -1639,7 +1789,7 @@ export default function AdaptiveMFA() {
           // silently destroys every non-AMFA realm attribute on each save
           // (frontendUrl, SCIM flags, custom attributes, ...).
           ...realmRep?.attributes,
-          adaptiveAuthEndpoint: data.necessaryParameters.adaptiveAuthEndpoint,
+          adaptiveAuthEndpoint: endpoint,
           adaptiveToggle: data.necessaryParameters.adaptiveToggle,
           fallbackRisk: data.necessaryParameters.fallbackRisk,
           notifyUsersRiskyLogin: data.necessaryParameters.notifyUsersRiskyLogin,
@@ -1780,14 +1930,14 @@ export default function AdaptiveMFA() {
             >
               <Controller
                 name="necessaryParameters.fallbackRisk"
-                defaultValue={1}
+                defaultValue={DEFAULT_FALLBACK_RISK}
                 control={control}
                 render={({ field }) => (
                   <TextInput
                     id="necessaryParametersId"
                     type="number"
                     min="1"
-                    max="10"
+                    max="4"
                     value={field.value}
                     onChange={field.onChange}
                   />
@@ -1815,6 +1965,18 @@ export default function AdaptiveMFA() {
             </FormGroup>
           </FormSection>
 
+          {!storedEndpoint && (
+            <Alert
+              variant="info"
+              isInline
+              isPlain
+              title={t("amfaSetEndpointFirst")}
+              data-testid="amfa-set-endpoint-first"
+            />
+          )}
+
+          {storedEndpoint && (
+          <>
           <FormSection title={t("amfaRiskSignals")} titleElement="h2">
             <Table variant="compact" aria-label={t("amfaRiskSignals")}>
               <Thead>
@@ -1931,6 +2093,8 @@ export default function AdaptiveMFA() {
               </>
             )}
           </FormSection>
+          </>
+          )}
 
         </>
       )}
