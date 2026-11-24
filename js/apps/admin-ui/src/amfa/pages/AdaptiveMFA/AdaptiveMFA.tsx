@@ -126,6 +126,44 @@ const amfaFieldLabel = {
   color: "var(--pf-v5-global--Color--100)",
 } as const;
 
+const amfaHelpText = {
+  gridColumn: "1 / -1",
+  fontSize: "13px",
+  color: "var(--pf-v5-global--Color--200)",
+} as const;
+
+// The engine skips the allow and deny lists of a signal that is switched off,
+// so entries saved while it is off are kept but never applied. Nothing else on
+// the page says so, and the switch sits in another row from the lists.
+const ListsOffWarning = ({
+  control,
+  scope,
+  lists,
+}: {
+  control: Control<any>;
+  scope: string;
+  lists: string[];
+}) => {
+  const { t } = useTranslation();
+  const [isDisabled, ...values] = useWatch({
+    control,
+    name: [`${scope}.isDisabled`, ...lists.map((list) => `${scope}.${list}`)],
+  }) as unknown[];
+  const hasEntries = values.some((value) =>
+    Array.isArray(value)
+      ? value.some((entry) => String(entry ?? "").trim() !== "")
+      : String(value ?? "")
+          .split("##")
+          .some((entry) => entry.trim() !== ""),
+  );
+  if (String(isDisabled) !== "true" || !hasEntries) return null;
+  return (
+    <HelperText style={{ gridColumn: "1 / -1" }} data-testid={`${scope}-lists-off`}>
+      <HelperTextItem variant="warning">{t("amfaListsSignalOff")}</HelperTextItem>
+    </HelperText>
+  );
+};
+
 const SIMPLE_SIGNALS: { key: string; label: string; desc: string }[] = [
   { key: "client", label: "client", desc: "adaptive-mfa-client-id-description" },
   { key: "device", label: "device", desc: "adaptive-mfa-device-description" },
@@ -421,6 +459,15 @@ export default function AdaptiveMFA() {
               />
               {ipErrorText(invalidIps("deny"))}
             </FormGroup>
+            {key === "operationSystem" && index === 0 && (
+              <div style={amfaHelpText} data-testid="operationSystem-list-help">
+                <div>{t("amfaOsListHelp")}</div>
+                <div style={{ marginTop: "4px" }}>{t("amfaOsAllowListHelp")}</div>
+              </div>
+            )}
+            {key !== "vpnMask" && (
+              <ListsOffWarning control={control} scope={`${key}.${index}`} lists={[wl, bl]} />
+            )}
           </>
         );
       }
@@ -506,6 +553,11 @@ export default function AdaptiveMFA() {
                 options={countryOptions}
               />
             </FormGroup>
+            <ListsOffWarning
+              control={control}
+              scope={`geoLoc.${index}`}
+              lists={["countriesWhitelist", "countriesBlacklist"]}
+            />
           </>
         );
       default:

@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The operating system lists say what to enter: an OS by name, such as
+  Windows, macOS or Linux, in any case and without a version, and that a
+  Linux entry also covers distributions such as Ubuntu or Fedora. They also
+  say that an allow-listed OS caps the risk of every login from it at 2. The
+  engine matches entries that way from the release with its OS list fix;
+  earlier engines need the exact family name the browser reports, such as
+  `Mac OS X` for macOS.
+- The IP address, operating system and country lists warn when they hold
+  entries while their signal is off, in the realm settings or in a group
+  override: the engine does not apply the lists of a switched-off signal.
+
 ## [1.1.0] - 2026-11-19
 
 Released together with keycloak-adaptive-mfa 1.1.0; use the two together.
