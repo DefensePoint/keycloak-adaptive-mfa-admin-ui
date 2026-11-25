@@ -99,6 +99,50 @@ const sameScoring = (a: ScoringPayload | null, b: ScoringPayload | null) => {
   return a !== null && b !== null && canonical(a) === canonical(b);
 };
 
+// The realm attributes the page writes, as stored. A save compares them, and
+// the engine's settings, with what the page loaded, so it never writes an
+// older view over settings changed elsewhere since (by another admin or the
+// REST API).
+const AMFA_REALM_ATTRIBUTES = [
+  "adaptiveToggle",
+  "adaptiveAuthEndpoint",
+  "fallbackRisk",
+  "notifyUsersRiskyLogin",
+] as const;
+type AmfaRealmAttribute = (typeof AMFA_REALM_ATTRIBUTES)[number];
+type AmfaRealmValues = Record<AmfaRealmAttribute, string>;
+
+const amfaRealmValues = (attributes?: Record<string, any>): AmfaRealmValues =>
+  Object.fromEntries(
+    AMFA_REALM_ATTRIBUTES.map((name) => [
+      name,
+      String(attributes?.[name] ?? "").trim(),
+    ]),
+  ) as AmfaRealmValues;
+
+// The engine's answer in one comparable form, with object keys sorted. Lists
+// keep their order, except the settings list itself (see canonicalSettings).
+const canonicalJson = (value: unknown): string => {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(",")}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${canonicalJson((value as any)[k])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value ?? null);
+};
+
+// The engine lists the same settings in no fixed order.
+const canonicalSettings = (value: unknown): string =>
+  Array.isArray(value)
+    ? `[${value.map(canonicalJson).sort().join(",")}]`
+    : canonicalJson(value);
+
+type EngineSnapshot = { signals: string; scoring: string };
+
 // The OS and VPN lists are free text, and an empty or blank row (left by
 // "Add value" or by clearing a row) means nothing: it is neither sent to the
 // engine, which stores the lists as given, nor shown again on load.
@@ -350,6 +394,14 @@ export default function AdaptiveMFA() {
   // The ref closes the gap before the disabled button renders.
   const [saving, setSaving] = useState(false);
   const savingNow = useRef(false);
+  // The AMFA settings the form shows, as loaded and then as last saved: the
+  // realm attributes the page writes, and the engine's answers. A save first
+  // reads them again and writes nothing if they changed since.
+  const loadedRealm = useRef<AmfaRealmValues | null>(null);
+  const loadedEngine = useRef<Partial<EngineSnapshot>>({});
+  // Set when a save found the settings changed elsewhere. Nothing was written,
+  // and saving waits for a reload that shows the current settings.
+  const [changedElsewhere, setChangedElsewhere] = useState(false);
   const toggleSignal = (key: string) =>
     setExpandedSignals((prev) =>
       prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key],
@@ -1003,6 +1055,7 @@ export default function AdaptiveMFA() {
         return false;
       }
       const jsonData = await response.json();
+      loadedEngine.current.signals = canonicalSettings(jsonData);
       console.log("Response from BE:", jsonData);
   
       if (Array.isArray(jsonData)) {
@@ -1215,6 +1268,7 @@ export default function AdaptiveMFA() {
       });
       if (response.ok) {
         const data = await response.json();
+        loadedEngine.current.scoring = canonicalJson(data);
         savedScoring.current = data
           ? { mode: data.mode, bias: data.bias, thresholds: data.thresholds }
           : {};
@@ -1271,6 +1325,8 @@ export default function AdaptiveMFA() {
       return;
     }
     engineLoad.current = "loading";
+    // A save compares with what this load reads, never with an earlier one.
+    loadedEngine.current = {};
     setConfigLoading(true);
     setConfigLoadFailed(false);
     // The load sets only what the engine sends, and an engine without config
@@ -1314,6 +1370,7 @@ export default function AdaptiveMFA() {
       if (!realmRep) {
         throw new Error(`Realm "${realm}" could not be read`);
       }
+      loadedRealm.current = amfaRealmValues(realmRep.attributes);
 
       // The same rule as the login (the plugin's AdaptiveAuthUtils
       // .isSwitchedOff): only an explicit "false" is off. A realm without the
@@ -1722,6 +1779,85 @@ export default function AdaptiveMFA() {
   const saveBlocked =
     configLoadFailed && (realmLoadFailed || (enable && !endpointChanged));
 
+  // The engine's settings and scoring config as they are now, in the form the
+  // load stored them, or null when they could not be read.
+  const readEngineNow = async (
+    saveRealm: string,
+  ): Promise<EngineSnapshot | null> => {
+    const read = async (path: string) => {
+      const response = await fetch(
+        `${adminClient.baseUrl}/realms/${saveRealm}/amfa-api/${path}`,
+        {
+          headers: getAuthorizationHeaders(await adminClient.getAccessToken()),
+        },
+      );
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return response.json();
+    };
+    try {
+      const [signals, scoring] = await Promise.all([
+        read("fetchAdaptiveMFAParameters"),
+        read("fetchScoringConfig"),
+      ]);
+      return {
+        signals: canonicalSettings(signals),
+        scoring: canonicalJson(scoring),
+      };
+    } catch (error) {
+      console.error("Error reading the AMFA settings again:", error);
+      return null;
+    }
+  };
+
+  // Called before a save writes anything. True when the save must stop because
+  // what it would write changed since the page loaded it: the named realm
+  // attributes, read from `current`, and, when the save writes the engine's
+  // settings, those too. Nothing is written then, and the page asks for a
+  // reload, so an older view never replaces newer settings unnoticed.
+  const stopForChangesElsewhere = async (
+    saveRealm: string,
+    current: { attributes?: Record<string, any> } | undefined,
+    names: readonly AmfaRealmAttribute[],
+    engine: boolean,
+  ): Promise<boolean> => {
+    const now = amfaRealmValues(current?.attributes);
+    const loaded = loadedRealm.current;
+    let changed = !loaded || names.some((name) => now[name] !== loaded[name]);
+    if (!changed && engine) {
+      const engineNow = await readEngineNow(saveRealm);
+      const engineLoaded = loadedEngine.current;
+      if (
+        engineNow === null ||
+        engineLoaded.signals === undefined ||
+        engineLoaded.scoring === undefined
+      ) {
+        addAlert(t("amfaChangeCheckFailed"), AlertVariant.danger);
+        return true;
+      }
+      changed =
+        engineNow.signals !== engineLoaded.signals ||
+        engineNow.scoring !== engineLoaded.scoring;
+    }
+    if (changed) {
+      setChangedElsewhere(true);
+    }
+    return changed;
+  };
+
+  // Loads the realm's AMFA settings again, and through them the engine's, after
+  // a save found them changed elsewhere. Saving stays off until it is done.
+  const reloadSettings = () => {
+    setChangedElsewhere(false);
+    setConfigLoadFailed(false);
+    setRealmLoadFailed(false);
+    engineLoad.current = "idle";
+    setConfigLoading(true);
+    setRealmLoaded(false);
+    void updateParameters().finally(() => setRealmLoaded(true));
+  };
+
   const onSubmit = async (data: AuthConfigSuper) => {
     // Defence in depth behind the disabled Save button, which is what actually
     // prevents this today: browsers suppress implicit form submission while the
@@ -1755,13 +1891,23 @@ export default function AdaptiveMFA() {
         if (!current) {
           throw new Error(`Realm "${saveRealm}" could not be read`);
         }
+        // Only the switch is written, so only the switch has to be unchanged.
+        if (
+          await stopForChangesElsewhere(
+            saveRealm,
+            current,
+            ["adaptiveToggle"],
+            false,
+          )
+        ) {
+          return;
+        }
+        const attributes = { ...current.attributes, adaptiveToggle: false };
         await adminClient.realms.update(
           { realm: saveRealm },
-          {
-            ...current,
-            attributes: { ...current.attributes, adaptiveToggle: false },
-          },
+          { ...current, attributes },
         );
+        loadedRealm.current = amfaRealmValues(attributes);
         addAlert(t("amfaSwitchedOff"), AlertVariant.success);
         return;
       }
@@ -1792,20 +1938,30 @@ export default function AdaptiveMFA() {
         if (!current) {
           throw new Error(`Realm "${saveRealm}" could not be read`);
         }
+        // The engine's settings are not written: they load from the new
+        // endpoint after this save.
+        if (
+          await stopForChangesElsewhere(
+            saveRealm,
+            current,
+            AMFA_REALM_ATTRIBUTES,
+            false,
+          )
+        ) {
+          return;
+        }
+        const attributes = {
+          ...current.attributes,
+          adaptiveAuthEndpoint: endpoint,
+          adaptiveToggle: true,
+          fallbackRisk: data.necessaryParameters.fallbackRisk,
+          notifyUsersRiskyLogin: data.necessaryParameters.notifyUsersRiskyLogin,
+        };
         await adminClient.realms.update(
           { realm: saveRealm },
-          {
-            ...current,
-            attributes: {
-              ...current.attributes,
-              adaptiveAuthEndpoint: endpoint,
-              adaptiveToggle: true,
-              fallbackRisk: data.necessaryParameters.fallbackRisk,
-              notifyUsersRiskyLogin:
-                data.necessaryParameters.notifyUsersRiskyLogin,
-            },
-          },
+          { ...current, attributes },
         );
+        loadedRealm.current = amfaRealmValues(attributes);
         addAlert(
           t(storedEndpoint ? "amfaEndpointChanged" : "amfaEndpointSaved"),
           AlertVariant.success,
@@ -1834,6 +1990,16 @@ export default function AdaptiveMFA() {
       }
 
       const realmRep = await adminClient.realms.findOne({ realm: saveRealm });
+      if (
+        await stopForChangesElsewhere(
+          saveRealm,
+          realmRep,
+          AMFA_REALM_ATTRIBUTES,
+          true,
+        )
+      ) {
+        return;
+      }
       const updatedAttributes = {
         ...realmRep,
         attributes: {
@@ -1913,6 +2079,11 @@ export default function AdaptiveMFA() {
       }
       savedSignals.current = signalsPayload;
       savedScoring.current = scoringPayload;
+      // What the next save compares with: the realm attributes as written, and
+      // the engine's settings as it now answers them. If they cannot be read,
+      // the next save says so instead of comparing with the old ones.
+      loadedRealm.current = amfaRealmValues(updatedAttributes.attributes);
+      loadedEngine.current = (await readEngineNow(saveRealm)) ?? {};
 
       addAlert("All the data are saved", AlertVariant.success);
     } catch (error) {
@@ -2151,11 +2322,33 @@ export default function AdaptiveMFA() {
         </>
       )}
 
+      {changedElsewhere && (
+        <Alert
+          isInline
+          variant={AlertVariant.warning}
+          title={t("amfaChangedElsewhere")}
+          data-testid="amfa-changed-elsewhere"
+          actionLinks={
+            <Button
+              type="button"
+              variant="link"
+              isInline
+              onClick={reloadSettings}
+              data-testid="amfa-changed-elsewhere-reload"
+            >
+              {t("amfaReloadSettings")}
+            </Button>
+          }
+        />
+      )}
+
       <ActionGroup>
         <Button
           type="submit"
           variant="primary"
-          isDisabled={configLoading || saveBlocked || saving}
+          isDisabled={
+            configLoading || saveBlocked || saving || changedElsewhere
+          }
           isLoading={saving}
           data-testid="amfa-save"
         >
