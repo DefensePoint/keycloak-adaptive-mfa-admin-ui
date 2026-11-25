@@ -209,6 +209,9 @@ test.describe("Adaptive MFA settings changed elsewhere", () => {
     await switchOff(page, toggle(page));
     await saveButton(page).click();
 
+    await expect(page.getByTestId("last-alert")).toContainText(
+      "Adaptive MFA is off for this realm",
+    );
     await expect(changedNotice(page)).toBeHidden();
     expect((await stored()).adaptiveToggle).toBe("false");
     expect((await stored()).adaptiveAuthEndpoint).toBe(
